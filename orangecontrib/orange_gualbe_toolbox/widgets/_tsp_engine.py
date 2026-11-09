@@ -30,7 +30,7 @@ LOWER_IS_BETTER = frozenset(("LogLoss", "MSE", "RMSE", "MAE", "MAPE", "SMAPE", "
 BOUNDED_METRICS = frozenset(("AUC", "CA", "F1", "Precision", "Recall", "Specificity",
                              "MatthewsCorrCoefficient", "R2"))
 PERCENT_METRICS = frozenset(("MAPE", "SMAPE", "CVRMSE"))
-TARGET_SCALE_METRICS = {"RMSE": 1, "MAE": 1, "MSE": 2}  # exponente de la escala de y
+TARGET_SCALE_METRICS = frozenset(("RMSE", "MAE"))
 
 N_BOOTSTRAP = 200
 N_BOOTSTRAP_LARGE = 50
@@ -398,24 +398,36 @@ class TestReport:
         return [pair for pair in self.pairs if pair.test == test]
 
 
-def noise_floor(scorer, actual):
+def _target_scale(actual):
+    actual = np.asarray(actual, dtype=float)
+    finite = actual[np.isfinite(actual)]
+    return float(np.abs(finite).max()) if finite.size else 0.0
+
+
+def noise_floor(scorer, actual, values=None):
     """Por debajo de esto, una diferencia de la métrica es ruido numérico.
 
     Hace falta cuando la métrica vale casi cero (un ajuste perfecto, RMSE de 1e-15): ahí la
     escala de los propios valores es también casi cero y no protege de nada. Se expresa en la
     escala natural de la métrica; para una métrica desconocida no se aplica ningún suelo.
+
+    Sea δ = tol·máx|y| el error de redondeo de un residuo. Entonces RMSE y MAE arrastran un
+    error del orden de δ, sea cual sea su valor, pero MSE arrastra 2·δ·RMSE + δ². Por eso en
+    MSE el suelo depende de cada valor (`values`): con y muy desplazada, δ² o máx|y|² serían
+    enormes frente al error real y ocultarían diferencias de verdad.
     """
     name = scorer.__name__
     tolerance = st.RELATIVE_TOLERANCE
+    if name == "MSE":
+        delta = tolerance * _target_scale(actual)
+        rmse = 0.0 if values is None else np.sqrt(np.abs(np.asarray(values, dtype=float)))
+        return 2 * delta * rmse + delta ** 2
     if name in BOUNDED_METRICS or name == "LogLoss":
         return tolerance
     if name in PERCENT_METRICS:
         return 100 * tolerance
     if name in TARGET_SCALE_METRICS:
-        actual = np.asarray(actual, dtype=float)
-        finite = actual[np.isfinite(actual)]
-        scale = float(np.abs(finite).max()) if finite.size else 0.0
-        return tolerance * scale ** TARGET_SCALE_METRICS[name]
+        return tolerance * _target_scale(actual)
     return 0.0
 
 
@@ -501,7 +513,6 @@ def run_tests(scoreset, sampling, options, progress=None):
     alpha = options.alpha
     notes = []
     rope = effective_rope(options, scorer, values)
-    floor = noise_floor(scorer, scoreset.combined.actual)
     ci_low = ci_high = np.full(count, np.nan)
     mean_ranks = np.full(count, np.nan)
     friedman = None
@@ -512,8 +523,9 @@ def run_tests(scoreset, sampling, options, progress=None):
     primary = ""
     if fold_matrix is not None:
         adjusted_folds = sign * fold_matrix
+        floors = np.broadcast_to(noise_floor(scorer, scoreset.combined.actual, fold_matrix), fold_matrix.shape)
         ratio, rho = scoreset.test_train_ratio, scoreset.rho
-        intervals = [st.corrected_interval(row, ratio, alpha, floor) for row in fold_matrix]
+        intervals = [st.corrected_interval(row, ratio, alpha, limit) for row, limit in zip(fold_matrix, floors)]
         ci_low = np.array([low for low, _ in intervals])
         ci_high = np.array([high for _, high in intervals])
         primary = st.TTEST_CORRECTED
@@ -526,6 +538,7 @@ def run_tests(scoreset, sampling, options, progress=None):
             for a, b in index_pairs:
                 progress()
                 x, y = adjusted_folds[a], adjusted_folds[b]
+                floor = np.maximum(floors[a], floors[b])
                 results = (st.corrected_ttest(x, y, ratio, alpha, floor), st.paired_ttest(x, y, alpha, floor),
                            st.wilcoxon_test(x, y, alpha=alpha, floor=floor),
                            st.bayes_correlated(x, y, rope, rho, floor))
@@ -537,7 +550,7 @@ def run_tests(scoreset, sampling, options, progress=None):
             for group in nominal.values():
                 _describe(group, sign, metric_label(scorer), metric_label(scorer))
             pairs_by_test.update(nominal)
-        friedman = st.friedman_test(adjusted_folds, alpha, on_folds=True, floor=floor)
+        friedman = st.friedman_test(adjusted_folds, alpha, on_folds=True, floor=floors)
         if friedman.n_blocks:
             mean_ranks = friedman.mean_ranks
         if count >= 3 and friedman.n_blocks >= 2:

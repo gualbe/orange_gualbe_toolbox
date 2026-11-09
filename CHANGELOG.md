@@ -3,6 +3,13 @@
 Cada versión se publica a la vez en GitHub (release `vX.Y.Z`) y en
 [PyPI](https://pypi.org/project/orange-gualbe-toolbox/).
 
+## 0.3.5 (2026-11-09)
+
+- Corregido en **Test & Score Pro**: con MSE y una variable objetivo muy desplazada, la protección
+  frente al ruido numérico ocultaba diferencias reales entre modelos.
+- Los mensajes distinguen ahora entre resultados exactamente iguales e iguales solo dentro de la
+  precisión numérica.
+
 ## 0.3.4 (2026-11-09)
 
 - Corregido en **Test & Score Pro**: una diferencia constante entre modelos ya no se confunde con

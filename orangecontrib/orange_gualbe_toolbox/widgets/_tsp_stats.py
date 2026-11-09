@@ -80,6 +80,7 @@ class PairTest:
     assumption: str = ""
     warnings: List[str] = field(default_factory=list)
     direction: int = 0          # según el estadístico del propio test: +1 si A es mejor
+    numeric_tie: bool = False   # iguales solo dentro de la precisión numérica
     units: str = ""             # en qué se mide la diferencia
     evidence: str = ""          # sobre qué aporta evidencia el test
 
@@ -105,6 +106,20 @@ def paired_values(a, b):
     a, b = np.asarray(a, dtype=float), np.asarray(b, dtype=float)
     keep = np.isfinite(a) & np.isfinite(b)
     return a[keep], b[keep], int((~keep).sum())
+
+
+def _paired_with_floor(a, b, floor):
+    """Como paired_values, manteniendo alineado un suelo que varíe por partición."""
+    a, b = np.asarray(a, dtype=float), np.asarray(b, dtype=float)
+    keep = np.isfinite(a) & np.isfinite(b)
+    floor = np.asarray(floor, dtype=float)
+    return a[keep], b[keep], int((~keep).sum()), floor[keep] if floor.ndim else floor
+
+
+def _same_scores_warning(a, b):
+    if np.array_equal(a, b):
+        return "Los dos modelos dan puntuaciones idénticas en todas las particiones."
+    return "Los dos modelos dan puntuaciones iguales, dentro de la precisión numérica, en todas las particiones."
 
 
 def _tolerances(values, others=None, floor=0.0):
@@ -177,6 +192,7 @@ def _rank_block(values, floor=0.0):
     """Rangos de un bloque (1 el mejor); los valores indistinguibles empatan."""
     order = np.argsort(values, kind="stable")[::-1]
     ordered = values[order][::-1]  # de menor a mayor, como espera _group_starts
+    floor = np.broadcast_to(floor, values.shape)[order][::-1]
     starts = _group_starts(ordered, TIE_FACTOR * _tolerances(ordered, floor=floor))[::-1]
     # Al recorrer de mayor a menor, un grupo acaba donde el orden ascendente lo empezó.
     groups = np.r_[0, np.cumsum(starts[:-1])]
@@ -224,7 +240,7 @@ def hedges_g(differences):
 
 def _t_family(a, b, ratio, test, assumption, alpha, floor=0.0):
     """Base común del t emparejado: `ratio=0` es el t clásico."""
-    a, b, removed = paired_values(a, b)
+    a, b, removed, floor = _paired_with_floor(a, b, floor)
     result = PairTest(test, n=len(a), assumption=assumption,
                       warnings=_undefined_warning(removed))
     n = len(a)
@@ -242,8 +258,8 @@ def _t_family(a, b, ratio, test, assumption, alpha, floor=0.0):
             result.statistic, result.p_value = 0.0, 1.0
             result.ci_low = result.ci_high = 0.0
             result.decision = SAME
-            result.warnings.append("Los dos modelos dan puntuaciones idénticas en todas "
-                                   "las particiones, dentro de la precisión numérica.")
+            result.numeric_tie = not np.array_equal(a, b)
+            result.warnings.append(_same_scores_warning(a, b))
         else:
             result.ci_low = result.ci_high = mean
             result.warnings.append("Varianza nula: la diferencia es constante en todas "
@@ -305,7 +321,7 @@ def signed_ranks(differences, zero_method="wilcox"):
 
 
 def wilcoxon_test(a, b, test=WILCOXON, assumption=None, alpha=ALPHA_DEFAULT, floor=0.0):
-    a, b, removed = paired_values(a, b)
+    a, b, removed, floor = _paired_with_floor(a, b, floor)
     result = PairTest(test, n=len(a), warnings=_undefined_warning(removed), assumption=(
         assumption or "Diferencias simétricas e independientes; las particiones de una "
         "validación cruzada no son independientes, así que el valor p es orientativo."))
@@ -319,11 +335,13 @@ def wilcoxon_test(a, b, test=WILCOXON, assumption=None, alpha=ALPHA_DEFAULT, flo
     if not len(nonzero):
         result.statistic, result.p_value = 0.0, 1.0
         result.decision = SAME
-        result.warnings.append("Los dos modelos dan puntuaciones idénticas en todas las "
-                               "particiones.")
+        result.numeric_tie = not np.array_equal(a, b)
+        result.warnings.append(_same_scores_warning(a, b))
         return result
     if n_zero:
-        result.warnings.append(f"{n_zero} empates (diferencia cero) descartados.")
+        exact = int(np.sum(a == b)) == n_zero
+        what = "diferencia cero" if exact else "diferencia nula dentro de la precisión numérica"
+        result.warnings.append(f"{n_zero} empates ({what}) descartados.")
     ties = len(np.unique(np.abs(nonzero))) < len(nonzero)
     if ties:
         result.warnings.append("Hay diferencias empatadas: se usa la aproximación normal.")
@@ -390,7 +408,7 @@ def bayes_correlated(a, b, rope, rho, floor=0.0):
     En validación cruzada de k particiones ρ = 1/k y el cálculo lo hace baycomp. Con otro
     muestreo se aplica la misma posterior con ρ = n_test / n_total, que baycomp no permite.
     """
-    a, b, removed = paired_values(a, b)
+    a, b, removed, floor = _paired_with_floor(a, b, floor)
     result = PairTest(BAYES, n=len(a), rope=rope, warnings=_undefined_warning(removed), assumption=(
         "Posterior t de Student con correlación entre particiones "
         f"ρ = {rho:.3g}; ROPE = ±{rope:g} en unidades de la métrica."))
@@ -493,7 +511,8 @@ def rank_blocks(scores, floor=0.0):
     blocks = scores[:, complete]
     if not blocks.size:
         return blocks, int((~complete).sum())
-    return (np.column_stack([_rank_block(column, floor) for column in blocks.T]),
+    floors = np.broadcast_to(floor, scores.shape)[:, complete]
+    return (np.column_stack([_rank_block(column, limit) for column, limit in zip(blocks.T, floors.T)]),
             int((~complete).sum()))
 
 
@@ -615,7 +634,10 @@ def holm_pairs(mean_ranks, n, on_folds=True):
 def corrected_interval(values, test_train_ratio, alpha=ALPHA_DEFAULT, floor=0.0):
     """Intervalo de confianza de la media por particiones, con Nadeau-Bengio."""
     values = np.asarray(values, dtype=float)
-    values = values[np.isfinite(values)]
+    keep = np.isfinite(values)
+    floor = np.asarray(floor, dtype=float)
+    floor = floor[keep] if floor.ndim else floor
+    values = values[keep]
     n = len(values)
     if n < 2:
         return np.nan, np.nan
@@ -637,6 +659,8 @@ def interpret(result, names, metric, alpha):
         return (f"Probabilidad de que {a} sea mejor en {target}: {result.p_a:.1%}; de que sean "
                 f"equivalentes: {result.p_rope:.1%}; de que lo sea {b}: {result.p_b:.1%}.")
     if result.decision == SAME:
+        if result.numeric_tie:
+            return f"{a} y {b} dan los mismos resultados, dentro de la precisión numérica."
         return f"{a} y {b} dan exactamente los mismos resultados."
     if result.decision == NOT_AVAILABLE:
         return "El test no se ha podido evaluar con estos datos."

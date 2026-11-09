@@ -715,8 +715,78 @@ banco.cerrar()
 banco = Banco(resampling=OWTestScorePro.LOO, comparison_metric="MAE").datos(perfecta[:40]).modelos(LinearRegressionLearner(), RidgeRegressionLearner(alpha=1e-13)).correr()
 check(banco.w._analysis.pairs_of(st.ROW_WILCOXON)[0].decision == st.SAME, "ajuste perfecto: por filas tampoco")
 banco.cerrar()
-for nombre, valor in (("RMSE", 1e-13 * 12), ("MAE", 1e-13 * 12), ("MSE", 1e-13 * 144), ("AUC", 1e-13), ("MAPE", 1e-11), ("Desconocida", 0.0)):
+for nombre, valor in (("RMSE", 1e-13 * 12), ("MAE", 1e-13 * 12), ("AUC", 1e-13), ("MAPE", 1e-11), ("Desconocida", 0.0)):
     check(cerca(engine.noise_floor(type(nombre, (), {}), np.array([0.5, -12.0])), valor, 1e-20), f"suelo de {nombre}")
+delta = 1e-13 * 12
+valores = np.array([0.0, 4.0, 9410.0])
+check(np.allclose(engine.noise_floor(type("MSE", (), {}), np.array([.5, -12.0]), valores), 2 * delta * np.sqrt(valores) + delta ** 2, atol=0),
+      "suelo de MSE: 2·δ·RMSE + δ²")
+
+# MSE con y muy desplazada: el suelo no oculta diferencias reales.
+aleatorio_mse = np.random.RandomState(21)
+X = aleatorio_mse.normal(size=(300, 3))
+atributos_mse = [ContinuousVariable(f"x{i}") for i in range(3)]
+
+
+def tabla_y(y):
+    return Table.from_numpy(Domain(atributos_mse, ContinuousVariable("y")), X, y)
+
+
+def comparar_mse(y, segundo, etiqueta):
+    """Evalúa con MSE, y comprueba los tests contra el cálculo directo sobre las particiones."""
+    banco = Banco(comparison_metric="MSE").datos(tabla_y(y)).modelos(LinearRegressionLearner(), segundo).correr()
+    scoreset, informe = banco.w._scoreset, banco.w._analysis
+    filas = scoreset.folds["MSE"]
+    d = filas[0] - filas[1]
+    t_manual = d.mean() / np.sqrt(d.var(ddof=1) * (1 / len(d) + scoreset.test_train_ratio))
+    pareja = informe.pairs_of(st.TTEST_CORRECTED)[0]
+    check(cerca(pareja.statistic, t_manual, 1e-6 * abs(t_manual)) and pareja.decision != st.SAME, f"{etiqueta}: t = {t_manual:.3f} ({pareja.statistic}, {pareja.decision})")
+    wilcoxon = informe.pairs_of(st.WILCOXON)[0]
+    referencia = stats.wilcoxon(-d, method="exact").pvalue
+    check(cerca(wilcoxon.p_value, referencia, 1e-12) and wilcoxon.p_value < 1, f"{etiqueta}: Wilcoxon = scipy ({wilcoxon.p_value})")
+    check(not any("empat" in x for x in wilcoxon.warnings), f"{etiqueta}: sin empates falsos {wilcoxon.warnings}")
+    bayes = informe.pairs_of(st.BAYES)[0]
+    check(bayes.p_rope < 1 and bayes.decision != "equivalentes", f"{etiqueta}: el bayesiano no las da por equivalentes")
+    banco.cerrar()
+    return pareja
+
+
+senal = X @ [1, 2, -1] / 3
+ruido_mse = aleatorio_mse.normal(size=300)
+y = 1.7e9 + 1000 * senal + 100 * ruido_mse
+pareja = comparar_mse(y, TreeRegression(max_depth=4), "MSE con y desplazada, árbol 4")
+check(pareja.decision == st.A_BETTER and pareja.p_value < 1e-3, f"MSE desplazada: gana la lineal ({pareja.p_value})")
+comparar_mse(y, TreeRegression(max_depth=2), "MSE con y desplazada, árbol 2")
+centinela = y.copy()
+centinela[0] = 999999999.0
+comparar_mse(centinela, TreeRegression(max_depth=4), "MSE con centinela")
+for escala in (1e-9, 1e9):
+    comparar_mse(escala * (1000 * senal + 100 * ruido_mse), TreeRegression(max_depth=4), f"MSE con escala {escala}")
+for desplazamiento in (1e6, 1e8, 1e10):
+    comparar_mse(desplazamiento + 1000 * senal + 100 * ruido_mse, TreeRegression(max_depth=4), f"MSE desplazada {desplazamiento:g}")
+# RMSE y MAE tienen un error de redondeo que no crece con su valor: mismo suelo.
+banco = Banco(comparison_metric="RMSE").datos(tabla_y(y)).modelos(LinearRegressionLearner(), TreeRegression(max_depth=4)).correr()
+check(banco.w._analysis.pairs_of(st.TTEST_CORRECTED)[0].decision == st.A_BETTER, "RMSE con y desplazada: gana la lineal")
+banco.cerrar()
+
+# Los textos dicen lo que es cierto.
+casi = np.array([.8, .9, .85, .7, .75])
+ruido = casi + 1e-15
+for prueba in (st.corrected_ttest(casi, ruido, .25), st.wilcoxon_test(casi, ruido)):
+    check(prueba.numeric_tie and prueba.decision == st.SAME and "precisión numérica" in " ".join(prueba.warnings), f"{prueba.test}: igualdad numérica")
+    prueba.a, prueba.b = 0, 1
+    check("precisión numérica" in st.interpret(prueba, ["A", "B"], "CA", .05) and "exactamente" not in st.interpret(prueba, ["A", "B"], "CA", .05),
+          f"{prueba.test}: la interpretación no dice «exactamente»")
+for prueba in (st.corrected_ttest(casi, casi.copy(), .25), st.wilcoxon_test(casi, casi.copy())):
+    prueba.a, prueba.b = 0, 1
+    check(not prueba.numeric_tie and "idénticas" in " ".join(prueba.warnings) and "exactamente" in st.interpret(prueba, ["A", "B"], "CA", .05), f"{prueba.test}: igualdad exacta")
+w = st.wilcoxon_test(np.array([.5, .3, .9, .4, .7]), np.array([.5 + 1e-15, .2, .7, .1, .3]))
+check(any("precisión numérica" in x for x in w.warnings), "Wilcoxon: empate por precisión, lo dice")
+w = st.wilcoxon_test(np.array([.5, .3, .9, .4, .7]), np.array([.5, .2, .7, .1, .3]))
+check(any("diferencia cero" in x for x in w.warnings), "Wilcoxon: empate exacto, lo dice")
+# Suelo por partición alineado con las particiones descartadas.
+r = st.corrected_ttest(np.array([.8, np.nan, .7, .6]), np.array([.7, .5, .65, .5]), .1, floor=np.array([1e-13, 1e-13, 1e-13, 1e-13]))
+check(r.n == 3 and np.isfinite(r.p_value), "suelo por partición con valores sin definir")
 
 # Casos reales con escalas extremas.
 semilla = np.random.RandomState(0)

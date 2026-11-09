@@ -130,8 +130,9 @@ columna *Decisión* indica directamente qué modelo gana.
 
 **Empates y redondeo**: dos valores que solo difieren por el redondeo del ordenador se consideran
 iguales. Cada valor se compara con su propia escala y, cuando una métrica vale casi cero (por ejemplo
-un ajuste perfecto), también con la escala natural de esa métrica: 1 en las acotadas, la escala de la
-variable objetivo en RMSE y MAE, y su cuadrado en MSE. Si la diferencia entre dos modelos es constante
+un ajuste perfecto), también con el error de redondeo propio de esa métrica: el de 1 en las acotadas, el
+de la variable objetivo en RMSE y MAE y, en MSE, el que resulta de ese error y del valor de cada
+partición. Si la diferencia entre dos modelos es constante
 en todas las particiones, no hay variación con la que estimar la incertidumbre y el test es **no
 evaluable**.
 
