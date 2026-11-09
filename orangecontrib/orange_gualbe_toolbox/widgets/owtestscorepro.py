@@ -1192,7 +1192,7 @@ class OWTestScorePro(OWWidget, ConcurrentWidgetMixin):
         if self.test_data is not None and self.resampling == self.ON_TEST:
             setup.append(("Filas de test", len(self.test_data)))
         from orangecontrib.orange_gualbe_toolbox.widgets._tsp_report import learner_parameters
-        models = [(learner_name(slot.learner), learner_parameters(slot.learner))
+        models = [(learner_name(slot.learner), learner_parameters(slot.learner, data.domain))
                   for slot in self.learners.values()]
         return dict(title=f"Evaluación de modelos: {data.name}", setup=setup, models=models,
                     failures=self._show_failures(),
@@ -1209,11 +1209,17 @@ class OWTestScorePro(OWWidget, ConcurrentWidgetMixin):
             return
         self.Error.report.clear()
         self.Information.report_saved.clear()
+        try:
+            context = self._report_context()
+        except Exception as error:  # pylint: disable=broad-except
+            self.Error.report(f"{type(error).__name__}: {error}")
+            return
         self._set_busy(True)
         self._running = "report"
-        self.start(task_report, self._report_context(), self._scoreset, self._analysis, path)
+        self.start(task_report, context, self._scoreset, self._analysis, path)
 
     def _on_report_done(self, done):
+        self.Error.report.clear()
         try:
             if done.path.lower().endswith(".pdf"):
                 html_to_pdf(done.html, done.path)

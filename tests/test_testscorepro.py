@@ -23,6 +23,7 @@ from statsmodels.stats.multitest import multipletests
 from AnyQt.QtWidgets import QApplication
 import Orange.base
 from Orange.base import Learner
+from Orange import modelling
 from Orange.classification import (
     LogisticRegressionLearner, MajorityLearner, NaiveBayesLearner, RandomForestLearner, TreeLearner,
 )
@@ -673,6 +674,60 @@ ruta = os.path.join(DIR, "razon.html")
 banco.w.export_report(ruta)
 banco.esperar()
 check("razón de discordancias (A/B)" in open(ruta, encoding="utf-8").read(), "McNemar: el informe dice que es una razón")
+banco.cerrar()
+
+# Los modelos que llegan desde el lienzo: varios son Fitter, sin atributo `params`.
+class ParametrosRotos(LogisticRegressionLearner):
+    name = "parámetros rotos"
+
+    @property
+    def params(self):
+        raise RuntimeError("no se pueden leer")
+
+    @params.setter
+    def params(self, _value):
+        pass
+
+
+for problema, datos_fit, ajeno in (("clasificación", clasif, "C=1.0"), ("regresión", reg, "C=1.0")):
+    modelos_fit = [modelling.SVMLearner(), modelling.TreeLearner(), modelling.RandomForestLearner(n_estimators=5),
+                   modelling.KNNLearner(), modelling.ConstantLearner()]
+    nativo = Nativo()
+    nativo.ejecutar(datos_fit, None, [modelling.SVMLearner(), modelling.KNNLearner()])
+    banco = Banco(n_folds=2, parallel_models=False).datos(datos_fit).modelos(modelling.SVMLearner(), modelling.KNNLearner()).correr()
+    check(np.array_equal(banco.salida["evaluations_results"].predicted, nativo.salida["evaluations_results"].predicted),
+          f"Fitter {problema}: mismas predicciones que el nativo")
+    banco.cerrar()
+    nativo.w.onDeleteWidget()
+    banco = Banco(n_folds=1).datos(datos_fit).modelos(*modelos_fit).correr().dibujar()
+    check(not banco.errores() and not banco.avisos().count("ha fallado"), f"Fitter {problema}: evaluación sin fallos {banco.avisos()}")
+    ruta = os.path.join(DIR, f"fitter_{problema}.html")
+    banco.w.export_report(ruta)
+    banco.esperar()
+    check(os.path.exists(ruta) and not banco.errores(), f"Fitter {problema}: informe exportado {banco.errores()}")
+    check(ajeno in open(ruta, encoding="utf-8").read(), f"Fitter {problema}: los parámetros salen en el informe")
+    check(not banco.w.cancel_button.isVisibleTo(banco.w) and banco.w.report_button2.isEnabled(), f"Fitter {problema}: botones tras exportar")
+    banco.w.send_report()
+    check(len(banco.w.report_html) > 2000, f"Fitter {problema}: informe nativo de Orange")
+    banco.cerrar()
+check(builder.learner_parameters(modelling.SVMLearner(), clasif.domain).startswith("C=1.0"), "Fitter: parámetros del tipo de problema")
+check(builder.learner_parameters(ParametrosRotos(), clasif.domain) == "—", "parámetros ilegibles: no rompen el informe")
+check(builder.learner_parameters(modelling.SVMLearner()) == "—", "Fitter sin dominio: no rompe el informe")
+
+banco = Banco(n_folds=1).datos(clasif).modelos(ParametrosRotos(), NaiveBayesLearner()).correr()
+ruta = os.path.join(DIR, "rotos.html")
+banco.w.export_report(ruta)
+banco.esperar()
+check(os.path.exists(ruta) and not banco.errores(), "parámetros ilegibles: se exporta el informe")
+original_contexto = banco.w._report_context
+banco.w._report_context = lambda: 1 / 0
+banco.w.export_report(os.path.join(DIR, "fallo.html"))
+check(banco.w.Error.report.is_shown() and banco.w.task is None, "fallo al preparar el informe: mensaje en el widget")
+check(not banco.w.cancel_button.isVisibleTo(banco.w) and banco.w.report_button2.isEnabled(), "fallo al preparar el informe: botones intactos")
+banco.w._report_context = original_contexto
+banco.w.export_report(ruta)
+banco.esperar()
+check(not banco.w.Error.report.is_shown(), "tras un fallo se puede volver a exportar")
 banco.cerrar()
 
 # Modelos con el mismo nombre: igual que el nativo.

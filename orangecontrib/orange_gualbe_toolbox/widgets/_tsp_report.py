@@ -8,6 +8,8 @@ from datetime import datetime
 
 import numpy as np
 
+from Orange.modelling.base import Fitter
+
 from orangecontrib.orange_gualbe_toolbox.widgets import _tsp_plots as plots
 from orangecontrib.orange_gualbe_toolbox.widgets import _tsp_stats as st
 from orangecontrib.orange_gualbe_toolbox.widgets._tsp_engine import metric_label
@@ -115,8 +117,16 @@ def report_figures(report, scoreset):
     return out
 
 
-def learner_parameters(learner):
-    params = getattr(learner, "params", None)
+def learner_parameters(learner, domain=None):
+    """Parámetros legibles de un modelo. Nunca impide generar el informe.
+
+    Los modelos que sirven para clasificación y regresión llegan como `Fitter`, cuyo
+    atributo `params` lanza una excepción: sus parámetros dependen del tipo de problema.
+    """
+    try:
+        params = learner.get_params(domain) if isinstance(learner, Fitter) else learner.params
+    except Exception:  # pylint: disable=broad-except
+        return "—"
     if not isinstance(params, dict):
         return "—"
     clean = {key: value for key, value in params.items()

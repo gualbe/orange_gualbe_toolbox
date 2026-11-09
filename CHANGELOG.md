@@ -3,6 +3,12 @@
 Cada versión se publica a la vez en GitHub (release `vX.Y.Z`) y en
 [PyPI](https://pypi.org/project/orange-gualbe-toolbox/).
 
+## 0.3.3 (2026-11-09)
+
+- Corregido en **Test & Score Pro**: exportar el informe fallaba con modelos que sirven para
+  clasificación y regresión, como SVM, Tree, Random Forest o kNN.
+- Corregido: si no se puede preparar el informe, el widget lo indica y los botones siguen operativos.
+
 ## 0.3.2 (2026-11-09)
 
 - Corregido en **Test & Score Pro**: con valores de escala muy distinta (un modelo que diverge, una
