@@ -12,7 +12,8 @@ Antes de tocar widgets, ayuda o empaquetado lee
 - Distribución y namespace: `orange_gualbe_toolbox` / `orangecontrib.orange_gualbe_toolbox` (en PyPI
   normalizado como `orange-gualbe-toolbox`).
 - Categoría: «Toolbox Gualbe», color `#7B68EE`.
-- Dependencias: `Orange3>=3.32.0` e `imbalanced-learn` (sin fijar versión).
+- Dependencias: `Orange3>=3.32.0`, `imbalanced-learn`, `pandas>=2.0` (File Import usa
+  `format="ISO8601"`), `openpyxl` y `xlrd`. Sin más límites de versión.
 - Repo público https://github.com/gualbe/orange_gualbe_toolbox (rama `main`, fuente de
   verdad) · PyPI https://pypi.org/project/orange-gualbe-toolbox/
 - Idioma de la ayuda: `es`.
@@ -43,11 +44,39 @@ Antes de tocar widgets, ayuda o empaquetado lee
 - Las tablas dispersas siguen dispersas a la salida. Solo `SMOTE` trabaja en
   disperso; `SMOTENC` y `SMOTEN` convierten a denso internamente.
 
+### Decisiones del widget File Import (tomadas en su alta, 2026-11-09)
+
+- Pedido por el usuario: integrar lo mejor de File y CSV File Import, con carga desde
+  URL, vista previa, configuración de columnas, importación avanzada y los formatos
+  CSV, TSV, TAB, XLS/XLSX y ARFF; optimizado y muy robusto ante datos anómalos.
+- Motor sin Qt en `_fileimport.py`. Todos los formatos terminan en un DataFrame más
+  una lista de `ColumnMeta`; convertir a `Table` es otro paso, así que editar columnas
+  nunca vuelve a leer el archivo.
+- Texto siempre con el motor C de pandas a través de `_Feed`, un objeto con `read()`
+  y sin atributo `mode` (así pandas no lo envuelve en `TextIOWrapper`). En esa misma
+  lectura transcodifica a UTF-8, cuenta filas irregulares con numpy, informa del
+  progreso y permite cancelar. No añadir una segunda pasada sobre el archivo.
+- Sin salida Data Frame: solo sirve para *Python Script*, duplica memoria y se obtiene
+  con `table_to_frame`.
+- Inferencia: textos con hasta 100 valores (y `filas ** 0.7`) son categóricos, si no
+  texto; enteros con dos valores, categóricos (como File); columna con al menos un
+  95 % de números, numérica; columnas vacías, omitidas con aviso. Nombres `class`,
+  `clase`, `target` u `objetivo` se proponen como clase. El texto siempre es meta.
+- Filas con campos de más o de menos: se conservan y se informa de cuántas son.
+- La columna de pesos de la cabecera de Orange se importa como meta.
+- Celdas combinadas de Excel: el valor se copia a todas las que abarca.
+- Fechas fuera de 1677–2262: perdidas con aviso (límite de pandas en nanosegundos).
+- El contenido manda sobre la extensión. URL solo http/https, también al redirigir,
+  con límite de tiempo y de tamaño (500 MB por defecto, configurable).
+- El estado se guarda por origen en `source_configs`: la clave es el nombre del
+  archivo (sobrevive a mover el workflow) o la URL.
+
 ## Widgets
 
 | Widget | Fichero / clase | Qué hace |
 |---|---|---|
 | SMOTE | `owsmote.py` / `OWSmote` | Balancea las clases con instancias sintéticas (SMOTE, SMOTENC o SMOTEN); gráfico antes/después. |
+| File Import | `owfileimport.py` / `OWFileImport` (motor en `_fileimport.py`) | Importa desde archivo o URL (CSV, TSV, TAB, XLS/XLSX y ARFF) con vista previa, edición de columnas e importación avanzada. |
 
 ## Pruebas
 
@@ -59,8 +88,8 @@ Antes de tocar widgets, ayuda o empaquetado lee
 Cada `tests/test_*.py` es un script ejecutable con el Python de Orange que sale con
 código distinto de 0 si algo falla. `probar.sh` lanza los tests solo en Orange.app:
 para Orange-Gualbe.app, ejecuta a mano
-`PYTHONNOUSERSITE=1 PYTHONPATH=$PWD /Applications/Orange-Gualbe.app/Contents/MacOS/python tests/test_smote.py`.
-La captura de la ayuda y el README se regenera con `assets/generar_imagenes.py`.
+`PYTHONNOUSERSITE=1 PYTHONPATH=$PWD /Applications/Orange-Gualbe.app/Contents/MacOS/python tests/test_<widget>.py`.
+Las capturas de la ayuda y el README se regeneran con `assets/generar_imagenes.py`.
 
 ## Ficheros comunes con los otros add-ons
 
