@@ -8,3 +8,4 @@ Utilidades visuales de ciencia de datos para Orange Data Mining.
    :caption: Widgets
 
    widgets/smote
+   widgets/fileimport

@@ -24,6 +24,7 @@ español (F1 o icono **?**).
 | Widget | Qué hace |
 |---|---|
 | **SMOTE** | Balancea las clases generando instancias sintéticas de las minoritarias. Muestra la distribución antes y después. |
+| **File Import** | Importa datos desde un archivo o una URL (CSV, TSV, TAB, XLS/XLSX y ARFF) con vista previa y edición de columnas. |
 
 ### SMOTE
 
@@ -46,6 +47,28 @@ sus filas originales intactas, más las instancias sintéticas al final.
 
 Balancea solo los datos de entrenamiento: las filas sintéticas en el conjunto de
 prueba darían una evaluación demasiado optimista.
+
+### File Import
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/gualbe/orange_gualbe_toolbox/main/assets/captura_fileimport.png" alt="Widget File Import: resumen de lo cargado, tabla de columnas y vista previa de filas" width="760">
+</p>
+
+Reúne en un solo widget lo mejor de **File** y **CSV File Import** de Orange.
+
+- **Origen**: archivo local (con recientes y arrastrar y soltar) o URL http/https.
+- **Formatos**: CSV, TSV, TAB de Orange, XLS, XLSX y ARFF, también comprimidos. El
+  formato, la codificación, el separador y la cabecera se detectan solos.
+- **Vista previa** al instante, leyendo solo el principio del archivo.
+- **Columnas**: nombre, tipo y rol editables, también varias a la vez, sin volver a
+  leer el archivo.
+- **Importación avanzada** plegada: codificación, separador, comillas, decimales,
+  miles, filas a saltar, cabecera, valores perdidos, comentarios y máximo de filas.
+- **Rápido y robusto**: carga en segundo plano y cancelable con el motor C de
+  pandas, y mensajes claros ante archivos vacíos o dañados, filas irregulares, Excel
+  con contraseña, URL con errores o que devuelven una página web, etc.
+
+Las opciones y las ediciones se guardan con el workflow.
 
 ## Ayuda de los widgets
 
