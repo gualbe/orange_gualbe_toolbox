@@ -91,10 +91,17 @@ Antes de tocar widgets, ayuda o empaquetado lee
   (tabla, salida, informe) es siempre valor(A) − valor(B) en las unidades de la métrica; en
   errores y rangos, negativo significa que A es mejor. Cada test decide con su propio estadístico.
 - Lo que solo difiere por redondeo (tolerancia relativa 1e-13) es igual; una diferencia constante
-  es «no evaluable», no evidencia. La tolerancia va siempre valor a valor, con la escala de cada
-  partición o de cada pareja de valores contiguos en los rangos: una escala global, incluso por
-  bloque, hace que un solo valor enorme borre las diferencias reales del resto. Los empates de
-  Wilcoxon se agrupan por cercanía, no con una rejilla.
+  es «no evaluable», no evidencia. La tolerancia va siempre valor a valor: una escala global,
+  incluso por bloque, hace que un solo valor enorme borre las diferencias reales del resto.
+  Dos valores son indistinguibles si sus intervalos valor ± tolerancia tienen un punto común.
+  Una diferencia es constante si lo tienen todas; las diferencias limpias (`clean_differences`)
+  son las que usan el t, Wilcoxon y el bayesiano.
+- Los empates de Wilcoxon y de los rangos usan una tolerancia 10 veces más estricta
+  (`TIE_FACTOR`): la constante necesita margen para el ruido, pero un empate falso cambia el
+  valor p. Se agrupa por cercanía, no con una rejilla.
+- Suelo absoluto por métrica (`noise_floor`), para cuando la métrica vale casi cero, como en un
+  ajuste perfecto: 1e-13 × su escala natural (1 en las acotadas y LogLoss, 100 en MAPE, SMAPE y
+  CVRMSE, escala de `y` en RMSE y MAE, su cuadrado en MSE). Una métrica desconocida no lleva suelo.
 - 10 particiones por defecto (el nativo, 5), porque con menos los tests apenas tienen potencia.
   Semilla 42 por defecto, la del nativo, para que las particiones coincidan.
 - Un hilo por modelo, solo con 5.000 filas o más y sin preprocesador compartido. Cambiar métrica,
