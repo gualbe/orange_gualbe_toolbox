@@ -188,13 +188,14 @@ def build_html(context, scoreset, report):
         pairs = report.pairs_of(test)
         parts.append(f"<h3>{_esc(st.TEST_NAMES[test])}</h3><p>{_esc(EXPLANATIONS[test])}</p>")
         if test == st.BAYES:
-            headers = ["A", "B", "Diferencia media", "P(A mejor)", "P(equivalentes)", "P(B mejor)", "Decisión"]
+            headers = ["A", "B", "Diferencia (A − B)", "P(A mejor)", "P(equivalentes)", "P(B mejor)", "Decisión"]
             rows = [[_esc(report.names[p.a]), _esc(report.names[p.b]), format_number(p.mean_diff),
                      format_number(p.p_a, 3), format_number(p.p_rope, 3), format_number(p.p_b, 3),
                      _esc(p.decision)] for p in pairs]
             numeric = (2, 3, 4, 5)
         else:
-            headers = ["A", "B", "Estadístico", "p", "p ajustado", "Diferencia", "IC", "Efecto", "Decisión"]
+            headers = ["A", "B", "Estadístico", "p", "p ajustado", "Diferencia (A − B)", "IC", "Efecto (A − B)",
+                       "Decisión"]
             rows = []
             for p in pairs:
                 interval = f"{format_number(p.ci_low)} – {format_number(p.ci_high)}" if np.isfinite(p.ci_low) else "—"
@@ -205,6 +206,14 @@ def build_html(context, scoreset, report):
                              interval, effect, _esc(p.decision)])
             numeric = (2, 3, 4, 5)
         parts.append(_rows(headers, rows, numeric=numeric))
+        if pairs:
+            parts.append(f"<p class='small'>Aporta evidencia sobre: {_esc(pairs[0].evidence)}. "
+                         f"La diferencia es A − B, en {_esc(pairs[0].units)}: en métricas de error y en "
+                         "rangos, un valor negativo significa que A es mejor.</p>")
+        if test == report.primary:
+            parts.append("<ul class='small'>" + "".join(
+                f"<li>{_esc(st.interpret(p, report.names, report.metric_label, report.alpha))}</li>"
+                for p in pairs) + "</ul>")
         assumption = next((p.assumption for p in pairs if p.assumption), "")
         if assumption:
             parts.append(f"<p class='small'>Supuesto: {_esc(assumption)}</p>")

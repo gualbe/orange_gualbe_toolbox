@@ -63,6 +63,7 @@ class EvalRequest:
 class AnalysisRequest:
     keys: list
     names: list
+    raw_names: list
     results: list
     learners: list
     scorers: list
@@ -112,14 +113,15 @@ def task_analyse(request, state):
     fresh = scoreset is None
     if fresh:
         scoreset = engine.compute_scores(request.keys, request.names, request.results, request.scorers,
-                                         request.sampling, request.n_rows, request.target, check)
+                                         request.sampling, request.n_rows, request.target, check,
+                                         request.raw_names)
     report = engine.run_tests(scoreset, request.sampling, request.options, check)
     tables = dict(scores=engine.scores_table(scoreset, report), folds=engine.folds_table(scoreset),
                   pairs=engine.pairs_table(report), ranks=engine.ranks_table(report))
     predictions, memory_error = None, False
     if fresh:
         try:
-            predictions = scoreset.combined.get_augmented_data(request.names)
+            predictions = scoreset.combined.get_augmented_data(request.raw_names)
         except MemoryError:
             memory_error = True
     return AnalysisDone(scoreset, report, predictions, tables, fresh, memory_error)
@@ -950,8 +952,9 @@ class OWTestScorePro(OWWidget, ConcurrentWidgetMixin):
             return
         if self._sampling_used is None:
             return
-        names = engine.unique_labels([learner_name(slot.learner) for _, slot in slots])
-        request = AnalysisRequest([key for key, _ in slots], names,
+        raw_names = [learner_name(slot.learner) for _, slot in slots]
+        names = engine.unique_labels(raw_names)
+        request = AnalysisRequest([key for key, _ in slots], names, raw_names,
                                   [slot.outcome.results for _, slot in slots],
                                   [slot.learner for _, slot in slots], self.scorers,
                                   self._sampling_used, self._target_index(), self._options(),
@@ -1041,7 +1044,7 @@ class OWTestScorePro(OWWidget, ConcurrentWidgetMixin):
             values = scoreset.overall[scorer.__name__]
             if np.isfinite(values).any():
                 best = np.nanmin(values) if engine.is_lower_better(scorer) else np.nanmax(values)
-                highlight.update((row, column) for row in np.flatnonzero(values == best))
+                highlight.update((row, column) for row in np.flatnonzero(np.isclose(values, best, rtol=1e-12)))
         tooltips = {}
         for model, name in enumerate(report.names):
             row, sort_row = [name], [name]
@@ -1086,12 +1089,16 @@ class OWTestScorePro(OWWidget, ConcurrentWidgetMixin):
         pairs = report.pairs_of(test) if test else []
         bayes = test == st.BAYES
         if bayes:
-            headers = ["A", "B", "Diferencia", "P(A mejor)", "P(equiv.)", "P(B mejor)", "Decisión"]
+            headers = ["A", "B", "Diferencia (A − B)", "P(A mejor)", "P(equiv.)", "P(B mejor)", "Decisión"]
         else:
-            headers = ["A", "B", "Estadístico", "p", "p ajustado", "Diferencia", "IC", "Efecto", "Decisión"]
+            headers = ["A", "B", "Estadístico", "p", "p ajustado", "Diferencia (A − B)", "IC", "Efecto (A − B)",
+                       "Decisión"]
         rows, sort_values = [], []
-        for pair in pairs:
+        tooltips = {}
+        for position, pair in enumerate(pairs):
             a, b = report.names[pair.a], report.names[pair.b]
+            for column in range(len(headers)):
+                tooltips[(position, column)] = st.interpret(pair, report.names, report.metric_label, report.alpha)
             if bayes:
                 rows.append([a, b, format_number(pair.mean_diff), format_number(pair.p_a, 3),
                              format_number(pair.p_rope, 3), format_number(pair.p_b, 3), pair.decision])
@@ -1106,12 +1113,16 @@ class OWTestScorePro(OWWidget, ConcurrentWidgetMixin):
                              interval, effect, pair.decision])
                 sort_values.append([a, b, pair.statistic, pair.p_value, pair.p_adjusted, pair.mean_diff,
                                     pair.ci_low, pair.effect, pair.decision])
-        self.details_model.set_content(headers, rows, sort_values)
+        self.details_model.set_content(headers, rows, sort_values, tooltips=tooltips)
         self.details_view.resizeColumnsToContents()
 
         text = []
         if test:
             text.append(f"<p><b>{st.TEST_NAMES[test]}.</b> {EXPLANATIONS[test]}</p>")
+            if pairs:
+                text.append(f"<p><b>Aporta evidencia sobre:</b> {pairs[0].evidence}. La diferencia es "
+                            f"A − B, en {pairs[0].units}: en métricas de error y en rangos, un valor "
+                            "negativo significa que A es mejor.</p>")
             assumption = next((p.assumption for p in pairs if p.assumption), "")
             if assumption:
                 text.append(f"<p><b>Supuesto:</b> {assumption}</p>")

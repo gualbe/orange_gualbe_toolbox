@@ -185,6 +185,63 @@ check(any("concibieron" in w for w in r.warnings), "Friedman: dice que son parti
 check(any("recomiendan" in w for w in r.warnings), "Friedman: pocos bloques avisa")
 
 
+# Defectos corregidos en la 0.3.1: ruido de coma flotante.
+a = np.array([14, 13, 15, 13, 14, 14, 13, 12, 14, 13]) / 15
+b = np.array([13, 12, 14, 12, 13, 13, 12, 11, 13, 12]) / 15
+ruido = st.corrected_ttest(a, b, 1 / 9)
+check(np.isnan(ruido.p_value) and ruido.decision == st.NOT_AVAILABLE, f"varianza casi nula: no evaluable ({ruido.p_value})")
+check(any("Varianza nula" in w for w in ruido.warnings), "varianza casi nula: avisa")
+limpio = st.corrected_ttest(a, a - 1 / 15, 1 / 9)
+check(ruido.decision == limpio.decision and cerca(ruido.mean_diff, 1 / 15), "varianza casi nula = varianza exacta 0")
+w = st.wilcoxon_test(a, b)
+referencia = 2 * stats.norm.sf((27.5 - 0.5) / np.sqrt(10 * 11 * 21 / 24 - (10 ** 3 - 10) / 48))
+check(cerca(w.p_value, referencia, 1e-9) and abs(w.p_value - 0.00190) < 1e-5, f"Wilcoxon con empates bien tratados ({w.p_value})")
+bay = st.bayes_correlated(a, b, 0.01, 0.1)
+check(bay.p_a == 1 and any("Varianza nula" in x for x in bay.warnings), "bayesiano: varianza casi nula es un punto")
+izquierda, derecha = st.corrected_interval(np.full(10, 1 / 3) + np.array([0, 1e-17] * 5), 1 / 9)
+check(cerca(izquierda, derecha), "intervalo sin varianza real: es un punto")
+empates = np.array([[0.1 + 0.2, 0.3, 0.5], [0.3, 0.1 + 0.2, 0.5], [0.1, 0.1, 0.1]]).T
+rangos, _ = st.rank_blocks(empates)
+check(rangos[0, 0] == rangos[1, 0] and rangos[0, 1] == rangos[1, 1], "Friedman: empate con ruido es empate")
+
+# Cada test decide con su propio estadístico.
+sesgado = np.array([-.01, -.011, -.012, -.013, -.014, -.015, -.016, -.017, -.018, -.019, -.021, .6])
+w = st.wilcoxon_test(sesgado, np.zeros(12))
+w.p_adjusted = w.p_value
+st.decide_frequentist(w, 0.05)
+check(abs(w.p_value - 0.0342) < 0.001 and cerca(round(w.effect, 2), -0.69), "Wilcoxon: p y r del caso sesgado")
+check(sesgado.mean() > 0 and w.decision == st.B_BETTER and w.direction == -1, f"Wilcoxon decide por rangos ({w.decision})")
+
+# El IC de McNemar depende de α.
+A = np.r_[np.ones(30, bool), np.zeros(10, bool), np.ones(25, bool)]
+B = np.r_[np.zeros(30, bool), np.ones(10, bool), np.ones(25, bool)]
+ic05, ic01 = st.mcnemar_test(A, B, alpha=0.05), st.mcnemar_test(A, B, alpha=0.01)
+check(ic01.ci_high - ic01.ci_low > ic05.ci_high - ic05.ci_low, "McNemar: α = 0,01 da un IC más ancho")
+check(cerca((ic01.ci_high - ic01.ci_low) / (ic05.ci_high - ic05.ci_low), stats.norm.ppf(.995) / stats.norm.ppf(.975)),
+      "McNemar: IC proporcional al valor crítico de α")
+
+# Iman-Davenport sin definir: concordancia perfecta.
+perfecto = np.array([np.full(8, .9), np.full(8, .8), np.full(8, .5)])
+r = st.friedman_test(perfecto)
+check(np.isnan(r.iman_davenport) and np.isnan(r.p_iman_davenport) and np.isfinite(r.p_value), "Iman-Davenport indefinido con concordancia perfecta")
+check(any("Iman-Davenport" in x for x in r.warnings), "Iman-Davenport indefinido: avisa")
+
+# Métricas de una partición con una sola clase.
+from Orange.evaluation import Results  # noqa: E402
+from Orange.evaluation.scoring import LogLoss, Specificity  # noqa: E402
+
+dominio_bin = Domain([ContinuousVariable("x")], DiscreteVariable("c", values=("a", "b")))
+una_clase = Results()
+una_clase.domain = dominio_bin
+una_clase.actual = np.zeros(2)
+una_clase.predicted = np.array([[0.0, 1.0]])
+una_clase.probabilities = np.array([[[.8, .2], [.8, .2]]])
+check(cerca(float(engine._score_fold(LogLoss(), LogLoss, una_clase, {})[0]), 0.2231435513), "LogLoss con una clase: a mano 0,2231")
+spec = engine._score_fold(Specificity(), Specificity, una_clase, dict(target=1, average="weighted"))
+check(cerca(float(spec[0]), 0.5), "Specificity definida si hay negativos")
+spec = engine._score_fold(Specificity(), Specificity, una_clase, dict(target=None, average="weighted"))
+check(np.isnan(spec[0]), "Specificity promediada con una sola clase: no definida")
+
 # --------------------------------------------------------------------- banco ----
 
 class Banco:
@@ -453,12 +510,133 @@ n_test = len(clasif) - round(len(clasif) * .66)
 check(abs(scoreset.rho - n_test / len(clasif)) < 0.01, f"aleatorio: ρ es la fracción de test ({scoreset.rho})")
 banco.cerrar()
 
+# Orientación de la diferencia: siempre métrica(A) − métrica(B).
+vivienda = Table("housing")
+banco = Banco(n_folds=2, comparison_metric="RMSE").datos(vivienda).modelos(LinearRegressionLearner(), MeanLearner()).correr()
+informe, scoreset = banco.w._analysis, banco.w._scoreset
+filas = scoreset.folds["RMSE"]
+d = filas[0] - filas[1]
+for test in (st.TTEST_CORRECTED, st.TTEST_PAIRED, st.BAYES):
+    pareja = informe.pairs_of(test)[0]
+    check(cerca(pareja.mean_diff, d.mean()) and pareja.mean_diff < 0, f"{test}: diferencia es RMSE(A) − RMSE(B)")
+pareja = informe.pairs_of(st.TTEST_CORRECTED)[0]
+check(pareja.ci_low < d.mean() < pareja.ci_high and pareja.ci_high < 0, "IC en la misma orientación")
+esperado = st.corrected_ttest(-filas[0], -filas[1], scoreset.test_train_ratio)
+check(cerca(pareja.statistic, -esperado.statistic), "estadístico en la misma orientación")
+check(pareja.decision == st.A_BETTER and pareja.effect < 0, "RMSE: A mejor aunque la diferencia sea negativa")
+comparar = banco.salida["comparisons"]
+columna = comparar.get_column("Diferencia (A − B)")
+check(cerca(columna[0], d.mean()), "salida: Diferencia (A − B)")
+ruta = os.path.join(DIR, "orientacion.html")
+banco.w.export_report(ruta)
+banco.esperar()
+contenido = open(ruta, encoding="utf-8").read()
+check("Diferencia (A − B)" in contenido and "valor negativo significa que A es mejor" in contenido, "informe: orientación explícita")
+banco.w.details_combo.setCurrentIndex(banco.w.details_combo.findData(st.TTEST_CORRECTED))
+banco.w._fill_details()
+check("Diferencia (A − B)" in banco.w.details_model.headers and "negativo" in banco.w.notes_browser.toPlainText(), "tabla: orientación explícita")
+banco.cerrar()
+
+# McNemar y los tests por filas dicen sobre qué aportan evidencia.
+banco = Banco(resampling=OWTestScorePro.LOO, comparison_metric="AUC").datos(clasif[:60]).modelos(LogisticRegressionLearner(), MajorityLearner()).correr()
+informe = banco.w._analysis
+texto = " ".join(informe.recommendation)
+check("Supera con evidencia" not in texto, f"AUC con McNemar: no afirma evidencia sobre AUC ({texto})")
+check("no mide AUC" in texto or "no en AUC" in texto, f"AUC con McNemar: lo aclara ({texto})")
+check(informe.pairs_of(st.MCNEMAR)[0].evidence == "aciertos por fila", "McNemar: evidencia sobre aciertos")
+check("aciertos por fila" in st.interpret(informe.pairs_of(st.MCNEMAR)[0], informe.names, "AUC", .05), "interpretación: nombra los aciertos")
+banco.w.comparison_metric = "CA"
+banco.w._options_changed()
+banco.esperar()
+texto = " ".join(banco.w._analysis.recommendation)
+check("no mide" not in texto, f"CA con McNemar: la evidencia sí es sobre la métrica ({texto})")
+banco.cerrar()
+banco = Banco(resampling=OWTestScorePro.LOO, comparison_metric="RMSE").datos(reg[:60]).modelos(LinearRegressionLearner(), MeanLearner()).correr()
+informe = banco.w._analysis
+texto = " ".join(informe.recommendation)
+check("Supera con evidencia" not in texto and "no mide RMSE" in texto, f"RMSE por filas: lo aclara ({texto})")
+pareja = informe.pairs_of(st.ROW_WILCOXON)[0]
+check(pareja.evidence == "error absoluto por fila" and pareja.mean_diff < 0, "por filas: error absoluto A − B")
+banco.w.comparison_metric = "MAE"
+banco.w._options_changed()
+banco.esperar()
+check("Supera con evidencia" in " ".join(banco.w._analysis.recommendation), "MAE por filas: sí es evidencia sobre MAE")
+banco.cerrar()
+
+# La recomendación no da por buena una varianza de ruido.
+banco = Banco(n_folds=3).datos(clasif).modelos(LogisticRegressionLearner(), MajorityLearner()).correr()
+scoreset = banco.w._scoreset
+scoreset.folds["CA"] = np.vstack((a, b))
+scoreset.overall["CA"] = np.array([a.mean(), b.mean()])
+opciones = engine.TestOptions(metric="CA")
+con_ruido = engine.run_tests(scoreset, banco.w._sampling_used, opciones)
+scoreset.folds["CA"] = np.vstack((a, a - 1 / 15))
+sin_ruido = engine.run_tests(scoreset, banco.w._sampling_used, opciones)
+check(con_ruido.recommendation == sin_ruido.recommendation, "recomendación igual con y sin ruido")
+check("No se ha podido evaluar" in " ".join(con_ruido.recommendation) and "Supera" not in " ".join(con_ruido.recommendation),
+      "recomendación: varianza nula no es evidencia")
+banco.cerrar()
+
+# Modelos con el mismo nombre: igual que el nativo.
+nativo = Nativo()
+nativo.ejecutar(clasif, None, [LogisticRegressionLearner(), LogisticRegressionLearner()])
+banco = Banco(n_folds=2).datos(clasif).modelos(LogisticRegressionLearner(), LogisticRegressionLearner()).correr()
+propia, suya = banco.salida["evaluations_results"], nativo.salida["evaluations_results"]
+check(propia.learner_names == suya.learner_names == ["logistic regression"] * 2, f"mismo nombre: learner_names ({propia.learner_names})")
+check(banco.salida["predictions"].domain == nativo.salida["predictions"].domain, "mismo nombre: columnas iguales al nativo")
+check(banco.w._analysis.names[1].endswith("(2)"), "mismo nombre: la vista los distingue")
+banco.cerrar()
+nativo.w.onDeleteWidget()
+
+# Iman-Davenport en iris con modelos idénticos, tal como aparecía.
+iris = Table("iris")
+banco = Banco(n_folds=2).datos(iris).modelos(LogisticRegressionLearner(), LogisticRegressionLearner(), MajorityLearner()).correr()
+fried = banco.w._analysis.friedman
+check(np.isnan(fried.p_iman_davenport) and np.isfinite(fried.p_value) and fried.p_value > 0, f"iris: sin p = 0 falso ({fried.p_iman_davenport}, {fried.p_value})")
+ruta = os.path.join(DIR, "iman.html")
+banco.w.export_report(ruta)
+banco.esperar()
+contenido = open(ruta, encoding="utf-8").read()
+check("Iman-Davenport no está definido" in contenido, "iris: el informe lo explica")
+
+# Diagrama de diferencias críticas: lleva su aviso.
+from orangecontrib.orange_gualbe_toolbox.widgets import _tsp_plots as plots  # noqa: E402
+
+figura = plots.critical_difference_figure(banco.w._analysis, 8, 4, plots.LIGHT)
+check(any("no son independientes" in texto.get_text() for texto in figura.texts), "diagrama: avisa en la propia figura")
+banco.w._analysis.friedman.on_folds = False
+figura = plots.critical_difference_figure(banco.w._analysis, 8, 4, plots.LIGHT)
+check(not any("no son independientes" in texto.get_text() for texto in figura.texts), "diagrama: sin aviso si no son particiones")
+banco.cerrar()
+
+# n_train real con muestreo por característica y valores perdidos.
+base_grupos = clasif.transform(Domain(clasif.domain.attributes, clasif.domain.class_var,
+                                      [DiscreteVariable("g", values=tuple("abcde"))]))
+with base_grupos.unlocked():
+    base_grupos.metas[:, 0] = np.arange(len(base_grupos)) % 5
+    base_grupos.metas[:40, 0] = np.nan
+banco = Banco(resampling=OWTestScorePro.FEATURE).datos(base_grupos).modelos(LogisticRegressionLearner(), MajorityLearner()).correr()
+scoreset = banco.w._scoreset
+check(abs(scoreset.test_train_ratio - 0.25) < 0.001, f"por característica: ratio real 0,25 ({scoreset.test_train_ratio:.3f})")
+check(int(scoreset.fold_sizes.sum()) == 263, "por característica: solo cuenta las filas usadas")
+banco.cerrar()
+
+# LogLoss se calcula aunque una partición tenga una sola clase.
+rara = sintetico(40)
+with rara.unlocked():
+    rara.Y[:] = np.r_[np.zeros(39), 1]
+banco = Banco(n_folds=2).datos(rara).modelos(MajorityLearner(), NaiveBayesLearner()).correr()
+scoreset = banco.w._scoreset
+check(scoreset.undefined["LogLoss"] == 0 and np.isfinite(scoreset.folds["LogLoss"]).all(), "LogLoss definida en todas las particiones")
+check(scoreset.undefined["AUC"] > 0, "AUC sigue sin definir donde no lo está")
+banco.cerrar()
+
 # Otras métricas de error: menor es mejor y el mejor modelo sale bien.
 banco = Banco(n_folds=2, comparison_metric="RMSE").datos(reg).modelos(MeanLearner(), LinearRegressionLearner()).correr()
 informe = banco.w._analysis
 check(informe.lower_better and informe.names[informe.best].startswith("linear"), "RMSE: gana la regresión lineal")
 pareja = informe.pairs_of(st.TTEST_CORRECTED)[0]
-check(pareja.decision == st.B_BETTER, f"RMSE: B (lineal) mejor ({pareja.decision})")
+check(pareja.decision == st.B_BETTER and pareja.mean_diff > 0, f"RMSE: B (lineal) mejor ({pareja.decision})")
 check(informe.rope > 0.001 and informe.rope != 0.01, "RMSE: ROPE relativo a la escala")
 banco.cerrar()
 

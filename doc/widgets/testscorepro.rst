@@ -118,6 +118,20 @@ Cómo elegir e interpretar los tests
      - Válido con datos de test separados. En dejar uno fuera o sobre entrenamiento, con
        reservas.
 
+**Sobre qué aporta evidencia cada test**: los tests por particiones comparan la métrica elegida.
+McNemar compara los **aciertos por fila** y los tests por filas, el **error absoluto**. Si la métrica
+elegida es otra (por ejemplo AUC con dejar uno fuera), su resultado no es evidencia sobre esa métrica,
+y el widget lo dice.
+
+**Orientación de las diferencias**: en las tablas, la salida y el informe, *Diferencia (A − B)* es
+siempre el valor de A menos el de B, en las unidades de la métrica. En métricas de error (RMSE, MAE…)
+y en rangos, una diferencia **negativa** significa que A es mejor. El efecto sigue el mismo signo. La
+columna *Decisión* indica directamente qué modelo gana.
+
+**Empates y redondeo**: dos valores que solo difieren por el redondeo del ordenador se consideran
+iguales. Si la diferencia entre dos modelos es constante en todas las particiones, no hay variación
+con la que estimar la incertidumbre y el test es **no evaluable**.
+
 **ROPE** (región de equivalencia práctica): diferencia por debajo de la cual dos modelos se
 consideran iguales a efectos prácticos. En automático vale 0,01 en métricas acotadas (AUC,
 CA, F1…) y el 1 % de la media en métricas de error. Puedes fijarlo en **Opciones avanzadas**.
@@ -161,7 +175,8 @@ Problemas habituales
    * - Más particiones que filas
      - Error con la solución.
    * - Métrica indefinida en una partición (AUC con una sola clase)
-     - Esa partición se descarta al comparar y se indica cuántas.
+     - Esa partición se descarta al comparar y se indica cuántas. Las métricas que sí están
+       definidas con una clase, como LogLoss, se calculan.
    * - Modelos idénticos, varianza cero o empates
      - El test lo dice en lugar de dar un número engañoso.
    * - Muy pocas particiones

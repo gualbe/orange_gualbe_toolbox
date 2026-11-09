@@ -105,7 +105,7 @@ def critical_difference_figure(report, width, height, theme):
     top = 0.0
     ax.set_xlim(0.2 - (k - 1) * 0.35, k - 0.2 + (k - 1) * 0.35)
     label_step = 1.0
-    ax.set_ylim(-(half + 1.4) * label_step, 1.6)
+    ax.set_ylim(-(half + 1.9) * label_step, 1.6)
     ax.plot([1, k], [top, top], color=theme.foreground, linewidth=1.4)
     for tick in range(1, k + 1):
         ax.plot([tick, tick], [top, top + 0.22], color=theme.foreground, linewidth=1.2)
@@ -133,8 +133,12 @@ def critical_difference_figure(report, width, height, theme):
         y = -0.32 - 0.14 * level
         ax.plot([ranks[order[start]] - 0.04, ranks[order[end]] + 0.04], [y, y],
                 color=theme.muted, linewidth=3.5, solid_capstyle="round")
-    figure.text(0.5, 0.01, "Rango medio (1 es el mejor). Los modelos unidos por una barra no se "
-                "distinguen según Nemenyi.", ha="center", va="bottom", fontsize=8.5, color=theme.muted)
+    caption = ("Rango medio (1 es el mejor). Los modelos unidos por una barra no se distinguen "
+               "según Nemenyi.")
+    if friedman.on_folds:
+        caption += ("\nLos bloques son particiones de un solo conjunto de datos, que no son "
+                    "independientes: diagrama descriptivo, no prueba de generalización.")
+    figure.text(0.5, 0.01, caption, ha="center", va="bottom", fontsize=8.5, color=theme.muted)
     return figure
 
 

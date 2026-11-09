@@ -269,11 +269,49 @@ def unique_labels(names):
     return out
 
 
-def compute_scores(keys, names, results, scorers, sampling, n_rows, target=None, progress=None):
+def _log_loss_by_hand(fold):
+    """Pérdida logarítmica para particiones de una clase, que sklearn rechaza."""
+    probabilities = fold.probabilities
+    probabilities = probabilities / probabilities.sum(axis=2, keepdims=True)
+    actual = np.asarray(fold.actual).astype(int)
+    chosen = np.take_along_axis(probabilities, actual[None, :, None].repeat(len(probabilities), axis=0), axis=2)
+    return -np.mean(np.log(np.clip(chosen[:, :, 0], np.finfo(float).eps, 1)), axis=1)
+
+
+def _specificity_of(actual, predicted, positive):
+    negatives = actual != positive
+    if not negatives.any():
+        return np.full(len(predicted), np.nan)  # sin negativos no está definida
+    return np.sum((predicted != positive) & negatives, axis=1) / negatives.sum()
+
+
+def _specificity_by_hand(fold, target):
+    actual, predicted = np.asarray(fold.actual, dtype=float), np.asarray(fold.predicted, dtype=float)
+    if target is not None:
+        return _specificity_of(actual, predicted, target)
+    classes, counts = np.unique(actual, return_counts=True)
+    return np.sum([_specificity_of(actual, predicted, value) * count / len(actual)
+                   for value, count in zip(classes, counts)], axis=0)
+
+
+def _score_fold(instance, scorer, fold, keywords):
+    """Puntuación de una partición; NaN solo si de verdad no está definida."""
+    try:
+        return np.ravel(instance.compute_score(fold, **keywords))
+    except Exception:  # pylint: disable=broad-except
+        if scorer.__name__ == "LogLoss" and fold.probabilities is not None:
+            return _log_loss_by_hand(fold)
+        if scorer.__name__ == "Specificity":
+            return _specificity_by_hand(fold, keywords.get("target"))
+        return np.nan  # p. ej. AUC con una sola clase en la partición
+
+
+def compute_scores(keys, names, results, scorers, sampling, n_rows, target=None, progress=None,
+                   raw_names=None):
     """Puntuaciones globales (las del nativo) y por partición."""
     progress = progress or (lambda: None)
     combined = results_merge(results)
-    combined.learner_names = list(names)
+    combined.learner_names = list(raw_names if raw_names is not None else names)
     overall, errors = {}, {}
     per_model = [results_one_vs_rest(res, target) if target is not None else res for res in results]
     for scorer in scorers:
@@ -295,8 +333,9 @@ def compute_scores(keys, names, results, scorers, sampling, n_rows, target=None,
         fold_results = [base.get_fold(index) for index in range(len(base.folds))]
         sizes = np.array([len(fold.actual) for fold in fold_results], dtype=float)
         n_test = float(sizes.mean())
-        n_train = sampling.train_fraction * n_rows if sampling.kind == SHUFFLE else n_rows - n_test
-        n_train = max(n_train, 1.0)
+        # Las filas de verdad: por característica, las que tienen valor en ese atributo.
+        n_used = float(sizes.sum()) if sampling.kind == FEATURE else float(n_rows)
+        n_train = max(n_used - n_test, 1.0)
         ratio = n_test / n_train
         rho = n_test / (n_train + n_test)
         if sampling.kind == KFOLD:
@@ -312,10 +351,7 @@ def compute_scores(keys, names, results, scorers, sampling, n_rows, target=None,
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 for position, fold in enumerate(fold_results):
-                    try:
-                        array[:, position] = np.ravel(instance.compute_score(fold, **keywords))
-                    except Exception:  # pylint: disable=broad-except
-                        pass  # queda NaN: p. ej. AUC con una sola clase en la partición
+                    array[:, position] = _score_fold(instance, scorer, fold, keywords)
             array[~np.isfinite(array)] = np.nan
             folds[scorer.__name__] = array
             undefined[scorer.__name__] = int(np.isnan(array).any(axis=0).sum())
@@ -410,6 +446,26 @@ def _adjust(pairs, method, alpha):
         st.decide_frequentist(pair, alpha)
 
 
+FLIP_STATISTIC = (st.TTEST_CORRECTED, st.TTEST_PAIRED, st.ROW_TTEST, st.HOLM_POSTHOC)
+
+
+def _describe(pairs, sign, units, evidence):
+    """Pasa las diferencias a la orientación que ve el usuario: valor(A) − valor(B).
+
+    Por dentro «positivo» significa «A es mejor»; en métricas de error y en rangos eso
+    es lo contrario de A − B. La decisión ya está tomada y no cambia.
+    """
+    for pair in pairs:
+        pair.units, pair.evidence = units, evidence
+        if sign >= 0:
+            continue
+        pair.mean_diff = -pair.mean_diff
+        pair.ci_low, pair.ci_high = -pair.ci_high, -pair.ci_low
+        pair.effect = -pair.effect
+        if pair.test in FLIP_STATISTIC:
+            pair.statistic = -pair.statistic
+
+
 def run_tests(scoreset, sampling, options, progress=None):
     """Calcula todas las comparaciones aplicables sobre `options.metric`."""
     progress = progress or (lambda: None)
@@ -453,14 +509,20 @@ def run_tests(scoreset, sampling, options, progress=None):
                     nominal[result.test].append(result)
             for key in (st.TTEST_CORRECTED, st.TTEST_PAIRED, st.WILCOXON):
                 _adjust(nominal[key], options.correction, alpha)
+            for group in nominal.values():
+                _describe(group, sign, metric_label(scorer), metric_label(scorer))
             pairs_by_test.update(nominal)
         friedman = st.friedman_test(adjusted_folds, alpha, on_folds=True)
         if friedman.n_blocks:
             mean_ranks = friedman.mean_ranks
         if count >= 3 and friedman.n_blocks >= 2:
-            pairs_by_test[st.NEMENYI] = st.nemenyi_pairs(friedman.mean_ranks, friedman.n_blocks, alpha)
+            nemenyi = st.nemenyi_pairs(friedman.mean_ranks, friedman.n_blocks, alpha)
+            ranks_of = f"los rangos de {metric_label(scorer)}"
+            _describe(nemenyi, -1.0, "rango medio", ranks_of)
+            pairs_by_test[st.NEMENYI] = nemenyi
             holm = st.holm_pairs(friedman.mean_ranks, friedman.n_blocks)
             _adjust(holm, "holm", alpha)
+            _describe(holm, -1.0, "rango medio", ranks_of)
             pairs_by_test[st.HOLM_POSTHOC] = holm
     else:
         ci_low, ci_high = _bootstrap_intervals(scoreset, scorer, scoreset.target, alpha, progress)
@@ -478,10 +540,11 @@ def run_tests(scoreset, sampling, options, progress=None):
                           "no se generaliza a datos nuevos.")
         for a, b in index_pairs:
             progress()
-            result = st.mcnemar_test(correct[a], correct[b], assumption)
+            result = st.mcnemar_test(correct[a], correct[b], assumption, alpha)
             result.a, result.b = a, b
             tests.append(result)
         _adjust(tests, options.correction, alpha)
+        _describe(tests, 1.0, "proporción de aciertos", "aciertos por fila")
         pairs_by_test[st.MCNEMAR] = tests
         if not primary:
             primary = st.MCNEMAR
@@ -504,6 +567,8 @@ def run_tests(scoreset, sampling, options, progress=None):
             row_w.append(result_w)
         _adjust(row_t, options.correction, alpha)
         _adjust(row_w, options.correction, alpha)
+        _describe(row_t, -1.0, "error absoluto", "error absoluto por fila")
+        _describe(row_w, -1.0, "error absoluto", "error absoluto por fila")
         pairs_by_test[st.ROW_TTEST] = row_t
         pairs_by_test[st.ROW_WILCOXON] = row_w
         primary = primary or st.ROW_WILCOXON
@@ -537,6 +602,13 @@ def is_clearly_better(report, a, b):
     return pair.decision == (st.B_BETTER if flipped else st.A_BETTER)
 
 
+METRIC_OF_EVIDENCE = {"aciertos por fila": "CA", "error absoluto por fila": "MAE"}
+
+
+def _shown(names, indices):
+    return ", ".join(names[i] for i in indices[:5]) + ("…" if len(indices) > 5 else "")
+
+
 def _recommend(report, scoreset):
     if report.best < 0:
         return ["No hay puntuaciones definidas con las que recomendar un modelo."]
@@ -547,22 +619,42 @@ def _recommend(report, scoreset):
         return lines
     rivals = [index for index in range(len(names)) if index != best
               and np.isfinite(report.values[index])]
-    clearly = [i for i in rivals if is_clearly_better(report, best, i)]
-    close = [i for i in rivals if i not in clearly]
+    primary = report.pairs_of(report.primary)
+    clearly, close, unknown = [], [], []
+    for rival in rivals:
+        pair, _ = _pair_between(primary, best, rival)
+        if pair is None or pair.decision == st.NOT_AVAILABLE:
+            unknown.append(rival)
+        elif is_clearly_better(report, best, rival):
+            clearly.append(rival)
+        else:
+            close.append(rival)
     label = st.TEST_NAMES.get(report.primary, "")
+    evidence = primary[0].evidence if primary else ""
+    # McNemar mide aciertos y los tests por filas, error absoluto: solo aportan
+    # evidencia sobre la métrica elegida si coincide con lo que miden.
+    measured = METRIC_OF_EVIDENCE.get(evidence)
+    about_metric = measured is None or measured == report.metric
     if clearly:
-        shown = ", ".join(names[i] for i in clearly[:5]) + ("…" if len(clearly) > 5 else "")
-        lines.append(f"Supera con evidencia ({label}, α = {report.alpha:g}) a: {shown}.")
+        if about_metric:
+            lines.append(f"Supera con evidencia ({label}, α = {report.alpha:g}) a: "
+                         f"{_shown(names, clearly)}.")
+        else:
+            lines.append(f"Aparte de {report.metric_label}, comete menos errores en {evidence} "
+                         f"({label}, α = {report.alpha:g}) que: {_shown(names, clearly)}. Ese test "
+                         f"no mide {report.metric_label}, así que no es evidencia sobre esa métrica.")
     if close:
-        shown = ", ".join(names[i] for i in close[:5]) + ("…" if len(close) > 5 else "")
-        lines.append(f"No se puede distinguir con estos datos de: {shown}.")
+        where = "" if about_metric else f" en {evidence} (no en {report.metric_label})"
+        lines.append(f"No se puede distinguir{where} con estos datos de: {_shown(names, close)}.")
         total = scoreset.train_time + scoreset.test_time
         faster = [i for i in close if total[i] * 2 < total[best]]
         if faster:
             quickest = min(faster, key=lambda i: total[i])
             lines.append(f"Si importa el coste, {names[quickest]} tarda "
                          f"{total[best] / max(total[quickest], 1e-9):.0f} veces menos y no es "
-                         "distinguible del mejor.")
+                         f"distinguible del mejor{where}.")
+    if unknown:
+        lines.append(f"No se ha podido evaluar la comparación con: {_shown(names, unknown)}.")
     bayes = report.pairs_of(st.BAYES)
     if bayes and close:
         rival = close[0]
@@ -618,8 +710,8 @@ def folds_table(scoreset):
 def pairs_table(report):
     if not report.pairs:
         return None
-    numeric = ("Estadístico", "p", "p ajustado", "Diferencia media", "IC inferior", "IC superior",
-               "Efecto", "P(A mejor)", "P(equivalentes)", "P(B mejor)")
+    numeric = ("Estadístico", "p", "p ajustado", "Diferencia (A − B)", "IC inferior", "IC superior",
+               "Efecto (A − B)", "P(A mejor)", "P(equivalentes)", "P(B mejor)")
     X = [[pair.statistic, pair.p_value, pair.p_adjusted, pair.mean_diff, pair.ci_low,
           pair.ci_high, pair.effect, pair.p_a, pair.p_rope, pair.p_b] for pair in report.pairs]
     tests = sorted({pair.test for pair in report.pairs})
@@ -629,11 +721,13 @@ def pairs_table(report):
         StringVariable("Modelo A"), StringVariable("Modelo B"),
         DiscreteVariable("Test", values=tuple(labels)),
         DiscreteVariable("Decisión", values=tuple(decisions)),
-        StringVariable("Métrica"), StringVariable("Tipo de efecto"),
-        StringVariable("Supuesto"), StringVariable("Avisos"),
+        StringVariable("Métrica"), StringVariable("Unidad de la diferencia"),
+        StringVariable("Evidencia sobre"), StringVariable("Tipo de efecto"),
+        StringVariable("Interpretación"), StringVariable("Supuesto"), StringVariable("Avisos"),
     ]
     metas = [[report.names[pair.a], report.names[pair.b], float(tests.index(pair.test)),
-              float(decisions.index(pair.decision)), report.metric_label, pair.effect_name,
+              float(decisions.index(pair.decision)), report.metric_label, pair.units, pair.evidence,
+              pair.effect_name, st.interpret(pair, report.names, report.metric_label, report.alpha),
               pair.assumption, " ".join(pair.warnings)] for pair in report.pairs]
     return _table([ContinuousVariable(name) for name in numeric], X, metas_vars, metas,
                   "Comparaciones por parejas")

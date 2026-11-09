@@ -16,6 +16,9 @@ from scipy import stats
 ALPHA_DEFAULT = 0.05
 BAYES_DECISION = 0.95
 MIN_FRIEDMAN_BLOCKS = 10
+# Dos valores que difieren menos que esto, en relación con la escala de los datos, son
+# iguales: 14/15 - 13/15 no da exactamente lo mismo que 13/15 - 12/15.
+RELATIVE_TOLERANCE = 1e-12
 
 TTEST_CORRECTED = "corrected_t"
 TTEST_PAIRED = "paired_t"
@@ -59,7 +62,7 @@ class PairTest:
     statistic: float = np.nan
     p_value: float = np.nan
     p_adjusted: float = np.nan
-    mean_diff: float = np.nan
+    mean_diff: float = np.nan   # tras run_tests: métrica(A) - métrica(B), en sus unidades
     ci_low: float = np.nan
     ci_high: float = np.nan
     effect: float = np.nan
@@ -72,6 +75,9 @@ class PairTest:
     decision: str = NOT_AVAILABLE
     assumption: str = ""
     warnings: List[str] = field(default_factory=list)
+    direction: int = 0          # según el estadístico del propio test: +1 si A es mejor
+    units: str = ""             # en qué se mide la diferencia
+    evidence: str = ""          # sobre qué aporta evidencia el test
 
 
 @dataclass
@@ -87,6 +93,7 @@ class FriedmanResult:
     critical_difference: float = np.nan
     assumption: str = ""
     warnings: List[str] = field(default_factory=list)
+    on_folds: bool = False
 
 
 def paired_values(a, b):
@@ -94,6 +101,25 @@ def paired_values(a, b):
     a, b = np.asarray(a, dtype=float), np.asarray(b, dtype=float)
     keep = np.isfinite(a) & np.isfinite(b)
     return a[keep], b[keep], int((~keep).sum())
+
+
+def _tolerance(*arrays):
+    """Tolerancia absoluta, proporcional al mayor valor presente en los datos."""
+    scale = 0.0
+    for array in arrays:
+        array = np.asarray(array, dtype=float)
+        finite = array[np.isfinite(array)]
+        if finite.size:
+            scale = max(scale, float(np.abs(finite).max()))
+    return RELATIVE_TOLERANCE * scale
+
+
+def clean_differences(a, b):
+    """Diferencias sin ruido de coma flotante: lo que la tolerancia no separa, es igual."""
+    tolerance = _tolerance(a, b)
+    if tolerance == 0:
+        return np.zeros_like(a, dtype=float)
+    return np.rint((a - b) / tolerance) * tolerance
 
 
 def _undefined_warning(n_removed):
@@ -143,9 +169,13 @@ def _t_family(a, b, ratio, test, assumption, alpha):
         result.warnings.append("Hacen falta al menos 2 particiones comparables.")
         return result
     differences = a - b
+    cleaned = clean_differences(a, b)
+    if np.ptp(cleaned) == 0:
+        differences = cleaned
     mean = float(np.mean(differences))
-    variance = float(np.var(differences, ddof=1))
+    variance = float(np.var(differences, ddof=1)) if np.ptp(cleaned) else 0.0
     result.mean_diff = mean
+    result.direction = int(np.sign(mean))
     if variance == 0:
         if mean == 0:
             result.statistic, result.p_value = 0.0, 1.0
@@ -218,10 +248,10 @@ def wilcoxon_test(a, b, test=WILCOXON, assumption=None, alpha=ALPHA_DEFAULT):
     result = PairTest(test, n=len(a), warnings=_undefined_warning(removed), assumption=(
         assumption or "Diferencias simétricas e independientes; las particiones de una "
         "validación cruzada no son independientes, así que el valor p es orientativo."))
-    differences = a - b
-    if not len(differences):
+    if not len(a):
         result.warnings.append("No hay particiones comparables.")
         return result
+    differences = clean_differences(a, b)
     result.mean_diff = float(np.mean(differences))
     nonzero = differences[differences != 0]
     n_zero = len(differences) - len(nonzero)
@@ -242,6 +272,7 @@ def wilcoxon_test(a, b, test=WILCOXON, assumption=None, alpha=ALPHA_DEFAULT):
     result.statistic = float(outcome.statistic)
     result.p_value = float(outcome.pvalue)
     positive, negative = signed_ranks(nonzero)
+    result.direction = int(np.sign(positive - negative))
     result.effect = (positive - negative) / (positive + negative)
     result.effect_name = "r biserial de rangos"
     result.effect_label = effect_label_rank(result.effect)
@@ -253,7 +284,7 @@ def wilcoxon_test(a, b, test=WILCOXON, assumption=None, alpha=ALPHA_DEFAULT):
     return result
 
 
-def mcnemar_test(correct_a, correct_b, assumption=None):
+def mcnemar_test(correct_a, correct_b, assumption=None, alpha=ALPHA_DEFAULT):
     """McNemar sobre aciertos por fila. Binomial exacto si hay menos de 25 discordancias."""
     correct_a = np.asarray(correct_a, dtype=bool)
     correct_b = np.asarray(correct_b, dtype=bool)
@@ -268,6 +299,7 @@ def mcnemar_test(correct_a, correct_b, assumption=None):
         result.warnings.append("No hay filas que comparar.")
         return result
     result.mean_diff = (only_a - only_b) / n
+    result.direction = int(np.sign(only_a - only_b))
     if not discordant:
         result.statistic, result.p_value = 0.0, 1.0
         result.decision = SAME
@@ -285,8 +317,9 @@ def mcnemar_test(correct_a, correct_b, assumption=None):
     ratio = max(result.effect, 1 / result.effect)
     result.effect_label = ("pequeño" if ratio < 1.5 else "medio" if ratio < 3 else "grande")
     spread = np.sqrt(max(discordant - (only_a - only_b) ** 2 / n, 0)) / n
-    result.ci_low = result.mean_diff - 1.96 * spread
-    result.ci_high = result.mean_diff + 1.96 * spread
+    critical = stats.norm.ppf(1 - alpha / 2)
+    result.ci_low = result.mean_diff - critical * spread
+    result.ci_high = result.mean_diff + critical * spread
     return result
 
 
@@ -304,12 +337,15 @@ def bayes_correlated(a, b, rope, rho):
     if n < 2:
         result.warnings.append("Hacen falta al menos 2 particiones comparables.")
         return result
-    differences = a - b
+    cleaned = clean_differences(a, b)
+    degenerate = np.ptp(cleaned) == 0
+    differences = cleaned if degenerate else a - b
     result.mean_diff = float(np.mean(differences))
-    variance = float(np.var(differences, ddof=1))
-    if variance == 0:
+    variance = 0.0 if degenerate else float(np.var(differences, ddof=1))
+    result.direction = int(np.sign(result.mean_diff))
+    if degenerate:
         result.warnings.append("Varianza nula: la posterior es un punto.")
-    if abs(rho - 1 / n) < 1e-9:
+    if not degenerate and abs(rho - 1 / n) < 1e-9:
         import baycomp  # lazy: tarda en importarse y Orange carga todos los widgets al arrancar
         probabilities = baycomp.two_on_single(a, b, rope=rope)
         if rope > 0:
@@ -379,8 +415,11 @@ def decide_frequentist(result, alpha):
         result.decision = NOT_AVAILABLE
     elif result.p_adjusted >= alpha:
         result.decision = "sin diferencia significativa"
+    elif result.direction == 0:
+        result.decision = "sin diferencia significativa"
     else:
-        result.decision = A_BETTER if result.mean_diff > 0 else B_BETTER
+        # Cada test decide con su propio estadístico: en Wilcoxon, los rangos.
+        result.decision = A_BETTER if result.direction > 0 else B_BETTER
     return result
 
 
@@ -391,7 +430,11 @@ def rank_blocks(scores):
     """
     scores = np.asarray(scores, dtype=float)
     complete = np.all(np.isfinite(scores), axis=0)
-    return stats.rankdata(-scores[:, complete], axis=0), int((~complete).sum())
+    blocks = scores[:, complete]
+    tolerance = _tolerance(blocks)
+    if tolerance > 0:
+        blocks = np.rint(blocks / tolerance)
+    return stats.rankdata(-blocks, axis=0), int((~complete).sum())
 
 
 def friedman_from_mean_ranks(mean_ranks, n):
@@ -407,8 +450,8 @@ def friedman_statistics(ranks):
 
 def iman_davenport(chi2, n, k):
     denominator = n * (k - 1) - chi2
-    if denominator <= 0:
-        return np.inf
+    if denominator <= RELATIVE_TOLERANCE * n * (k - 1):
+        return np.nan  # concordancia perfecta: el estadístico no está definido
     return (n - 1) * chi2 / denominator
 
 
@@ -434,6 +477,7 @@ def friedman_test(scores, alpha=ALPHA_DEFAULT, on_folds=True):
     result = FriedmanResult(n_models=k, n_blocks=n, mean_ranks=ranks.mean(axis=1) if n else
                             np.full(k, np.nan), assumption=(
         "Bloques independientes; el estadístico se aproxima por χ²."))
+    result.on_folds = bool(on_folds)
     if on_folds:
         result.warnings.append(FRIEDMAN_ON_FOLDS)
     if removed:
@@ -458,8 +502,9 @@ def friedman_test(scores, alpha=ALPHA_DEFAULT, on_folds=True):
     outcome = stats.friedmanchisquare(*ranks)
     result.chi2, result.p_value = float(outcome.statistic), float(outcome.pvalue)
     result.iman_davenport = float(iman_davenport(result.chi2, n, k))
-    if np.isinf(result.iman_davenport):
-        result.p_iman_davenport = 0.0
+    if np.isnan(result.iman_davenport):
+        result.warnings.append("Iman-Davenport no está definido porque los rangos son casi "
+                               "idénticos en todos los bloques: usa el χ² de Friedman.")
     else:
         result.p_iman_davenport = float(stats.f.sf(result.iman_davenport, k - 1, (k - 1) * (n - 1)))
     return result
@@ -476,6 +521,7 @@ def nemenyi_pairs(mean_ranks, n, alpha=ALPHA_DEFAULT, on_folds=True):
             delta = mean_ranks[b] - mean_ranks[a]  # el rango menor es el mejor
             q_value = abs(delta) / scale
             result = PairTest(NEMENYI, a, b, n=n, statistic=float(q_value), mean_diff=float(delta),
+                              direction=int(np.sign(delta)),
                               assumption=f"Bloques independientes; CD = {difference:.3f}.",
                               warnings=[FRIEDMAN_ON_FOLDS] if on_folds else [])
             result.p_value = float(stats.studentized_range.sf(q_value, k, np.inf))
@@ -499,7 +545,7 @@ def holm_pairs(mean_ranks, n, on_folds=True):
             z_value = delta / scale
             result = PairTest(HOLM_POSTHOC, a, b, n=n, statistic=float(z_value),
                               p_value=float(2 * stats.norm.sf(abs(z_value))),
-                              mean_diff=float(delta),
+                              mean_diff=float(delta), direction=int(np.sign(delta)),
                               assumption="Bloques independientes; z de los rangos medios.",
                               warnings=[FRIEDMAN_ON_FOLDS] if on_folds else [])
             out.append(result)
@@ -514,6 +560,9 @@ def corrected_interval(values, test_train_ratio, alpha=ALPHA_DEFAULT):
     if n < 2:
         return np.nan, np.nan
     mean = float(np.mean(values))
+    tolerance = _tolerance(values)
+    if tolerance == 0 or np.ptp(np.rint(values / tolerance)) == 0:
+        return mean, mean
     scale = np.sqrt(np.var(values, ddof=1) * (1 / n + test_train_ratio))
     half = stats.t.ppf(1 - alpha / 2, n - 1) * scale
     return mean - half, mean + half
@@ -522,10 +571,11 @@ def corrected_interval(values, test_train_ratio, alpha=ALPHA_DEFAULT):
 def interpret(result, names, metric, alpha):
     """Una frase en lenguaje llano con la lectura del resultado."""
     a, b = names[result.a], names[result.b]
+    target = result.evidence or metric
     if result.test == BAYES:
         if not np.isfinite(result.p_a):
             return "No se ha podido calcular."
-        return (f"Probabilidad de que {a} sea mejor en {metric}: {result.p_a:.1%}; de que sean "
+        return (f"Probabilidad de que {a} sea mejor en {target}: {result.p_a:.1%}; de que sean "
                 f"equivalentes: {result.p_rope:.1%}; de que lo sea {b}: {result.p_b:.1%}.")
     if result.decision == SAME:
         return f"{a} y {b} dan exactamente los mismos resultados."
@@ -533,6 +583,6 @@ def interpret(result, names, metric, alpha):
         return "El test no se ha podido evaluar con estos datos."
     if result.decision in (A_BETTER, B_BETTER):
         winner = a if result.decision == A_BETTER else b
-        return f"Hay evidencia (α = {alpha:g}) de que {winner} es mejor en {metric}."
-    return (f"Sin evidencia suficiente (α = {alpha:g}) de que {a} y {b} difieran en {metric}; "
+        return f"Hay evidencia (α = {alpha:g}) de que {winner} es mejor en {target}."
+    return (f"Sin evidencia suficiente (α = {alpha:g}) de que {a} y {b} difieran en {target}; "
             "esto no demuestra que sean iguales.")
