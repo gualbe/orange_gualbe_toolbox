@@ -5,6 +5,7 @@ Cubre la validación estadística, la comparación con el Test & Score nativo y 
 muestreos × tipos de problema × anomalías.
 """
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -898,6 +899,135 @@ banco.w.export_report(ruta)
 banco.esperar()
 check(not banco.w.Error.report.is_shown(), "tras un fallo se puede volver a exportar")
 banco.cerrar()
+
+# Maquetación del informe en PDF: se comprueba con el registro de posiciones y con el PDF real.
+from AnyQt.QtCore import QSize  # noqa: E402
+from orangecontrib.orange_gualbe_toolbox.widgets import _tsp_pdf as pdf  # noqa: E402
+from orangecontrib.orange_gualbe_toolbox.widgets import _tsp_plots as plots  # noqa: E402
+
+try:
+    from PyQt6.QtPdf import QPdfDocument
+except ImportError:
+    QPdfDocument = None
+
+check(builder.number(-8.98e-05).startswith("\u22128,98") and "e" not in builder.number(0.000236), "números: científica uniforme")
+check(builder.number(0.4342) == "0,4342" and builder.number(-0.0248) == "\u22120,0248", "números: coma decimal")
+check(builder.probability(0.0003) == "< 0,001" and builder.probability(0.4342) == "0,4342", "valores p: mismo formato")
+check(builder.number(float("nan")) == "—", "números: sin definir")
+
+
+def revisar_maquetacion(ruta, layout, etiqueta):
+    items = layout.items
+    for item in items:
+        check(pdf.BODY_TOP - .5 <= item.top and item.bottom <= pdf.BODY_BOTTOM + .5, f"{etiqueta}: {item.kind} «{item.label[:30]}» dentro de la página ({item.top:.0f}-{item.bottom:.0f})")
+        check(item.left >= pdf.MARGIN_LEFT - .5 and item.right <= pdf.PAGE_WIDTH - pdf.MARGIN_RIGHT + .5, f"{etiqueta}: {item.kind} dentro de los márgenes")
+    for actual, siguiente in zip(items, items[1:]):
+        if actual.kind == "heading" or actual.keep_next:
+            check(actual.page == siguiente.page, f"{etiqueta}: «{actual.label[:40]}» con su contenido (p{actual.page} y p{siguiente.page})")
+        if actual.page == siguiente.page:
+            check(actual.bottom <= siguiente.top + .5, f"{etiqueta}: sin solapes tras «{actual.label[:30]}»")
+    check(items[-1].kind != "heading", f"{etiqueta}: no termina en un título")
+    for anterior, aviso in zip(items, items[1:]):
+        if aviso.kind == "note" and anterior.kind == "paragraph" and "Supuesto" in anterior.label:
+            check(anterior.page == aviso.page, f"{etiqueta}: el primer aviso va con su test")
+    tablas = {}
+    for item in items:
+        if item.kind == "table":
+            if item.fragment == 1:
+                actual_tabla = []
+                tablas[id(actual_tabla)] = actual_tabla
+            actual_tabla.append(item)
+    partes_max = 0
+    for partes in tablas.values():
+        total = partes[0].total_rows
+        check(sum(p.rows for p in partes) == total, f"{etiqueta}: «{partes[0].label}» conserva todas las filas")
+        if total <= pdf.SHORT_TABLE_ROWS:
+            check(len(partes) == 1, f"{etiqueta}: tabla corta «{partes[0].label}» entera")
+        partes_max = max(partes_max, len(partes))
+        for parte in partes[1:]:
+            check(parte.repeats_header, f"{etiqueta}: «{parte.label}» repite la cabecera")
+        for parte in partes:
+            check(parte.rows >= min(pdf.MIN_ROWS_ON_PAGE, total), f"{etiqueta}: «{parte.label}» sin filas sueltas ({parte.rows})")
+    check(any(i.kind == "summary" and i.page == 1 for i in items), f"{etiqueta}: resumen en la primera página")
+    check(os.path.getsize(ruta) > 20000, f"{etiqueta}: PDF con contenido")
+    if QPdfDocument is not None:
+        documento = QPdfDocument(None)
+        documento.load(ruta)
+        check(documento.pageCount() == layout.pages, f"{etiqueta}: páginas {documento.pageCount()} = {layout.pages}")
+        textos = [documento.getAllText(p).text() for p in range(documento.pageCount())]
+        check(not any(re.search(r"\d,\s*\n\s*\d{2,}", texto) for texto in textos), f"{etiqueta}: ningún número partido")
+        for numero, texto in enumerate(textos, 1):
+            check(f"Página {numero} de {layout.pages}" in texto, f"{etiqueta}: numeración de la página {numero}")
+            check(layout.footer.split(" · ")[1] in texto, f"{etiqueta}: pie con el conjunto de datos en la página {numero}")
+        for item in items:
+            if item.kind == "heading":
+                primera = item.label[:18]
+                check(primera in textos[item.page - 1].replace("\n", " "), f"{etiqueta}: título «{primera}» en la página registrada {item.page}")
+        documento.close()
+    return partes_max
+
+
+def informe_pdf(datos, modelos, etiqueta, test=None, **opciones):
+    banco = Banco(**opciones).datos(datos, test).modelos(*modelos).correr()
+    ruta = os.path.join(DIR, f"{etiqueta.replace(' ', '_').replace('/', '_')}.pdf")
+    banco.w.export_report(ruta)
+    banco.esperar()
+    check(not banco.w.Error.report.is_shown(), f"{etiqueta}: exporta sin error {banco.errores()}")
+    partes = revisar_maquetacion(ruta, banco.w._report_layout, etiqueta)
+    banco.cerrar()
+    return partes
+
+
+def varios(clases, n, largo=False):
+    modelos = []
+    for i in range(n):
+        m = clases[i % len(clases)]()
+        m.name = (f"Modelo con un nombre larguísimo que no cabe en la columna número {i + 1}" if largo else f"modelo {i + 1}")
+        modelos.append(m)
+    return modelos
+
+
+CLASIFICA = [NaiveBayesLearner, MajorityLearner, TreeLearner, LogisticRegressionLearner]
+REGRESION = [MeanLearner, LinearRegressionLearner, TreeRegression]
+informe_pdf(clasif, varios(CLASIFICA, 2), "pdf 2 modelos clasificación kfold", n_folds=2)
+partes = informe_pdf(clasif, varios(CLASIFICA, 12), "pdf 12 modelos clasificación kfold", n_folds=2)
+check(partes >= 2, "12 modelos: alguna tabla larga se reparte en varias páginas")
+informe_pdf(clasif, varios(CLASIFICA, 12, largo=True), "pdf 12 nombres largos", n_folds=2)
+informe_pdf(clasif, varios(CLASIFICA, 4, largo=True), "pdf 4 nombres largos", n_folds=1)
+informe_pdf(reg, varios(REGRESION, 2), "pdf 2 modelos regresión", n_folds=2)
+informe_pdf(reg, varios(REGRESION, 12), "pdf 12 modelos regresión", n_folds=2)
+informe_pdf(clasif[:60], varios(CLASIFICA, 4), "pdf dejar uno fuera", resampling=OWTestScorePro.LOO)
+informe_pdf(reg[:110], varios(REGRESION, 3), "pdf sobre test regresión", test=reg[110:], resampling=OWTestScorePro.ON_TEST)
+informe_pdf(clasif[:200], varios(CLASIFICA, 3), "pdf sobre test clasificación", test=clasif[200:], resampling=OWTestScorePro.ON_TEST)
+informe_pdf(clasif, varios(CLASIFICA, 3), "pdf aleatorio", resampling=OWTestScorePro.SHUFFLE, n_repeats=3)
+informe_pdf(clasif, varios(CLASIFICA, 1), "pdf un modelo", n_folds=1)
+check(len(plots._short_name("x" * 200, 6)) < 40 and plots._short_name("corto", 6) == "corto", "gráficos: acortan los nombres largos")
+
+# Un solo formato y avisos agrupados.
+banco = Banco(n_folds=2, resampling=OWTestScorePro.LOO).datos(clasif[:60]).modelos(*varios(CLASIFICA, 4)).correr()
+documento = builder.build_blocks(banco.w._report_context(), banco.w._scoreset, banco.w._analysis)
+tablas_num = [b for b in documento.blocks if isinstance(b, builder.TableBlock) and b.label not in ("Modelos", "Reproducibilidad")]
+for tabla in tablas_num:
+    for fila in tabla.rows:
+        for posicion in tabla.numeric:
+            check("." not in fila[posicion] and "e" not in fila[posicion].lower(), f"«{tabla.label}»: un solo formato ({fila[posicion]})")
+avisos = [b.text for b in documento.blocks if isinstance(b, builder.Note)]
+check(len(avisos) == len(set(avisos)), "avisos: sin repeticiones")
+discordantes = [a for a in avisos if "discordantes" in a]
+check(len(discordantes) <= 1, f"avisos: agrupados por tipo ({len(discordantes)})")
+check(all(c in " ".join(avisos) for c in ("Afecta a",)), "avisos: dicen a quién afectan")
+resultado = next(b for b in documento.blocks if isinstance(b, builder.Result))
+check(not any(ch in " ".join(resultado.lines) for ch in ("0.0", "0.9", "0.5", "0.8")), f"resultado con coma decimal: {resultado.lines[0]}")
+banco.cerrar()
+banco = Banco(n_folds=2).datos(clasif).modelos(*varios(CLASIFICA, 4)).correr()
+documento = builder.build_blocks(banco.w._report_context(), banco.w._scoreset, banco.w._analysis)
+textos_doc = [getattr(b, "text", "") for b in documento.blocks]
+check(sum("concibieron" in t for t in textos_doc) == 1, "aviso de Friedman una sola vez")
+banco.cerrar()
+pareja_a = st.PairTest(st.WILCOXON, 0, 1, warnings=["3 empates (diferencia cero) descartados."])
+pareja_b = st.PairTest(st.WILCOXON, 0, 2, warnings=["7 empates (diferencia cero) descartados."])
+agrupados = builder.grouped_warnings([pareja_a, pareja_b], ["A", "B", "C"], set())
+check(len(agrupados) == 1 and "de 3 a 7" in agrupados[0] and "A – B" in agrupados[0] and "A – C" in agrupados[0], f"avisos: rango y parejas ({agrupados})")
 
 # Modelos con el mismo nombre: igual que el nativo.
 nativo = Nativo()

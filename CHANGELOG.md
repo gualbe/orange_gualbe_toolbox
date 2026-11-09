@@ -3,6 +3,14 @@
 Cada versión se publica a la vez en GitHub (release `vX.Y.Z`) y en
 [PyPI](https://pypi.org/project/orange-gualbe-toolbox/).
 
+## 0.3.6 (2026-11-09)
+
+- **Test & Score Pro**: nuevo diseño del informe en PDF, con una primera página de resumen, numeración,
+  pie de página y gráficos a buen tamaño. Los títulos y las introducciones van siempre con su contenido,
+  las tablas cortas no se parten y las largas repiten la cabecera.
+- El informe, en PDF y en HTML, usa un único formato de números y agrupa los avisos repetidos.
+- Corregido: la leyenda del gráfico de tiempos ya no tapa las barras.
+
 ## 0.3.5 (2026-11-09)
 
 - Corregido en **Test & Score Pro**: con MSE y una variable objetivo muy desplazada, la protección

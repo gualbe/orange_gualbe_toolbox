@@ -1,10 +1,17 @@
-"""Informe autocontenido de Test & Score Pro (HTML con imágenes incrustadas, o PDF)."""
+"""Contenido del informe de Test & Score Pro y su versión HTML.
+
+`build_blocks` describe el informe como una lista de bloques; HTML y PDF (ver _tsp_pdf.py)
+los dibujan cada uno a su manera, así que dicen exactamente lo mismo.
+"""
 import base64
 import html
 import importlib.metadata
 import platform
+import re
 import sys
+from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Callable, List, Optional
 
 import numpy as np
 
@@ -46,20 +53,86 @@ EXPLANATIONS = {
         "Versión no paramétrica del anterior: rangos con signo del error absoluto por fila."),
 }
 
-STYLE = """
-body{font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#1b1b19;
-margin:0 auto;max-width:980px;padding:24px;line-height:1.5;background:#fff}
-h1{font-size:26px;margin:0 0 4px}h2{font-size:19px;margin:30px 0 10px;border-bottom:2px solid #2a78d6;
-padding-bottom:4px}h3{font-size:15px;margin:20px 0 6px}
-table{border-collapse:collapse;width:100%;font-size:13px;margin:8px 0}
-th,td{border-bottom:1px solid #e5e4df;padding:5px 7px;text-align:left;vertical-align:top}
-th{background:#f4f3ef}td.n{text-align:right;font-variant-numeric:tabular-nums}
-tr.best td{font-weight:600;background:#e8f1fb}
-.note{background:#fff6e5;border-left:4px solid #eda100;padding:8px 12px;margin:8px 0;font-size:13px}
-.rec{background:#e8f1fb;border-left:4px solid #2a78d6;padding:10px 14px;margin:12px 0}
-.small{color:#52514e;font-size:12px}img{max-width:100%;height:auto}
-"""
+SUMMARY_MODELS = 10
+MAX_LISTED_PAIRS = 6
 
+
+# ------------------------------------------------------------------ bloques ----
+
+@dataclass
+class Title:
+    text: str
+    subtitle: str
+
+
+@dataclass
+class Heading:
+    level: int
+    text: str
+
+
+@dataclass
+class Paragraph:
+    text: str
+    small: bool = False
+    keep_next: bool = False      # va con lo que le sigue (introducción)
+    keep_previous: bool = False  # va con lo anterior (pie de tabla)
+    bullet: bool = False
+
+
+@dataclass
+class Note:
+    text: str
+
+
+@dataclass
+class Result:
+    lines: List[str]
+
+
+@dataclass
+class TableBlock:
+    headers: List[str]
+    rows: List[List[str]]
+    numeric: tuple = ()
+    best: Optional[int] = None
+    key_value: bool = False
+    label: str = ""
+
+
+@dataclass
+class FigureSpec:
+    title: str
+    make: Callable
+
+
+@dataclass
+class Figures:
+    specs: List[FigureSpec]
+    wide: bool = False
+
+
+@dataclass
+class Summary:
+    facts: str
+    table: TableBlock
+    figure: FigureSpec
+    total_models: int = 0
+
+
+@dataclass
+class PageBreak:
+    pass
+
+
+@dataclass
+class Document:
+    title: str
+    footer: str
+    blocks: list = field(default_factory=list)
+
+
+# ------------------------------------------------------------------ formato ----
 
 def _esc(value):
     return html.escape(str(value))
@@ -79,15 +152,73 @@ def format_p(value):
     return "&lt; 0,001" if value < 0.001 else f"{value:.4f}".replace(".", ",")
 
 
-def _rows(headers, rows, numeric=(), best=None):
-    head = "".join(f"<th>{_esc(h)}</th>" for h in headers)
-    body = []
-    for index, row in enumerate(rows):
-        cells = "".join(f'<td class="n">{cell}</td>' if column in numeric else f"<td>{cell}</td>"
-                        for column, cell in enumerate(row))
-        marker = ' class="best"' if index == best else ""
-        body.append(f"<tr{marker}>{cells}</tr>")
-    return f"<table><thead><tr>{head}</tr></thead><tbody>{''.join(body)}</tbody></table>"
+MINUS = "\u2212"
+SUPERSCRIPTS = str.maketrans("0123456789-", "⁰¹²³⁴⁵⁶⁷⁸⁹⁻")
+
+
+def number(value, decimals=4):
+    """Un solo formato en todo el informe: coma decimal y notación científica uniforme."""
+    if value is None or not np.isfinite(value):
+        return "—"
+    size = abs(value)
+    if size != 0 and (size >= 1e6 or size < 1e-3):
+        mantissa, exponent = f"{value:.2e}".split("e")
+        text = mantissa.replace(".", ",") + "·10" + str(int(exponent)).translate(SUPERSCRIPTS)
+    else:
+        text = f"{value:.{decimals}f}".replace(".", ",")
+    return text.replace("-", MINUS, 1) if text.startswith("-") else text
+
+
+def probability(value):
+    if value is None or not np.isfinite(value):
+        return "—"
+    return "< 0,001" if value < 0.001 else f"{value:.4f}".replace(".", ",")
+
+
+def _localise(text, names):
+    """Coma decimal en un texto del motor, sin tocar los nombres de los modelos."""
+    if names:
+        pattern = "(" + "|".join(re.escape(name) for name in sorted(names, key=len, reverse=True)) + ")"
+        pieces = re.split(pattern, text)
+    else:
+        pieces = [text]
+    return "".join(piece if index % 2 else re.sub(r"(?<=\d)\.(?=\d)", ",", piece)
+                   for index, piece in enumerate(pieces))
+
+
+_INTEGER = re.compile(r"(?<![\d.,])\d+(?![\d]|[.,]\d)")
+
+
+def grouped_warnings(pairs, names, seen):
+    """Agrupa los avisos repetidos de un test sin perder qué dicen ni a quién afectan."""
+    groups = {}
+    for pair in pairs:
+        for line in pair.warnings:
+            found = _INTEGER.findall(line)
+            key = _INTEGER.sub("N", line)
+            entry = groups.setdefault(key, dict(values=[], pairs=[], line=line))
+            entry["values"].extend(int(item) for item in found[:1])
+            entry["pairs"].append(f"{names[pair.a]} – {names[pair.b]}")
+    out = []
+    for key, entry in groups.items():
+        distinct = sorted(set(entry["values"]))
+        text = entry["line"] if len(distinct) <= 1 else key
+        if text in seen:
+            continue
+        seen.add(text)
+        count = len(entry["pairs"])
+        detail = ""
+        if len(distinct) > 1:
+            detail = f" N va de {distinct[0]} a {distinct[-1]}."
+        if count == 1:
+            who = f" Afecta a: {entry['pairs'][0]}."
+        elif count <= MAX_LISTED_PAIRS:
+            who = f" Afecta a {count} comparaciones: {'; '.join(entry['pairs'])}."
+        else:
+            who = (f" Afecta a {count} comparaciones; el detalle por pareja está en la salida "
+                   "Pairwise Comparisons.")
+        out.append(_localise(text, names) + detail + who)
+    return out
 
 
 def versions():
@@ -101,20 +232,27 @@ def versions():
     return out
 
 
-def report_figures(report, scoreset):
-    theme = plots.LIGHT
-    width, height = 8.6, 4.0
-    out = [("Comparación de modelos", plots.scores_figure(report, scoreset, width, height, theme))]
+def figure_specs(report, scoreset):
+    """Gráficos del informe, dibujables al tamaño que necesite cada formato."""
+    theme = plots.REPORT
+    specs = [FigureSpec("Comparación de modelos",
+                        lambda w, h: plots.scores_figure(report, scoreset, w, h, theme))]
     if report.friedman is not None and report.friedman.n_models >= 3:
-        out.append(("Diagrama de diferencias críticas",
-                    plots.critical_difference_figure(report, width, 3.2, theme)))
+        specs.append(FigureSpec("Diagrama de diferencias críticas",
+                                lambda w, h: plots.critical_difference_figure(report, w, h, theme)))
     if report.primary:
-        out.append((f"Matriz de comparaciones: {st.TEST_NAMES[report.primary]}",
-                    plots.matrix_figure(report, report.primary, width, height, theme)))
+        specs.append(FigureSpec(f"Matriz de comparaciones: {st.TEST_NAMES[report.primary]}",
+                                lambda w, h: plots.matrix_figure(report, report.primary, w, h, theme)))
     if report.pairs_of(st.BAYES):
-        out.append(("Probabilidades bayesianas", plots.bayes_figure(report, width, height, theme)))
-    out.append(("Tiempos", plots.times_figure(report, scoreset, width, 3.0, theme)))
-    return out
+        specs.append(FigureSpec("Probabilidades bayesianas",
+                                lambda w, h: plots.bayes_figure(report, w, h, theme)))
+    specs.append(FigureSpec("Tiempos", lambda w, h: plots.times_figure(report, scoreset, w, h, theme)))
+    return specs
+
+
+def report_figures(report, scoreset):
+    """Figuras para el informe nativo de Orange."""
+    return [(spec.title, spec.make(8.6, 3.4)) for spec in figure_specs(report, scoreset)]
 
 
 def learner_parameters(learner, domain=None):
@@ -134,110 +272,210 @@ def learner_parameters(learner, domain=None):
     return ", ".join(f"{key}={value!r}" for key, value in sorted(clean.items())) or "—"
 
 
-def build_html(context, scoreset, report):
-    """Devuelve el informe completo. `context` describe datos y muestreo."""
-    parts = [f"<h1>{_esc(context['title'])}</h1>",
-             f"<p class='small'>Generado el {datetime.now():%Y-%m-%d %H:%M} con Test &amp; Score Pro."
-             "</p>"]
-    parts.append("<div class='rec'>" + "<br>".join(_esc(line) for line in report.recommendation) + "</div>")
-
-    parts.append("<h2>Datos y muestreo</h2>")
-    parts.append(_rows(["Concepto", "Valor"], [[_esc(k), _esc(v)] for k, v in context["setup"]]))
-    if context.get("failures"):
-        parts.append("<h3>Modelos que han fallado</h3>")
-        parts.extend(f"<div class='note'>{_esc(line)}</div>" for line in context["failures"])
-    if context.get("notes"):
-        parts.extend(f"<div class='note'>{_esc(line)}</div>" for line in context["notes"])
-
-    parts.append("<h2>Modelos</h2>")
-    parts.append(_rows(["Modelo", "Parámetros"],
-                       [[_esc(n), _esc(p)] for n, p in context["models"]]))
-
-    parts.append("<h2>Puntuaciones</h2>")
-    labels = [metric_label(scorer) for scorer in scoreset.scorers]
-    headers = ["Modelo"] + labels + [f"IC {1 - report.alpha:.0%} ({report.metric_label})", "Rango medio",
-                                     "Entrenamiento (s)", "Predicción (s)"]
+def _summary_table(report, scoreset):
+    label = report.metric_label
+    interval = f"IC {1 - report.alpha:.0%}".replace(".", ",")
     rows = []
-    order = list(report.order)
-    for model in order:
-        row = [_esc(report.names[model])]
-        row += [format_number(scoreset.overall[s.__name__][model]) for s in scoreset.scorers]
+    shown = list(report.order)[:SUMMARY_MODELS]
+    for model in shown:
         low, high = report.ci_low[model], report.ci_high[model]
-        row.append(f"{format_number(low)} – {format_number(high)}" if np.isfinite(low) else "—")
-        row += [format_number(report.mean_ranks[model], 2),
-                format_number(scoreset.train_time[model], 3),
-                format_number(scoreset.test_time[model], 3)]
+        rows.append([report.names[model], number(report.values[model]),
+                     f"{number(low)} – {number(high)}" if np.isfinite(low) else "—",
+                     number(report.mean_ranks[model], 2),
+                     number(scoreset.train_time[model] + scoreset.test_time[model], 3)])
+    return TableBlock(["Modelo", label, interval, "Rango medio", "Tiempo (s)"], rows, numeric=(1, 2, 3, 4), best=0,
+                      label="Resumen")
+
+
+def _setup_facts(context, report):
+    setup = dict(context["setup"])
+    return " · ".join(str(item) for item in (
+        setup.get("Conjunto de datos"), f"{setup.get('Filas')} filas", setup.get("Tipo de problema"),
+        setup.get("Muestreo"), f"métrica {report.metric_label}",
+        _localise(f"α = {report.alpha:g}", ())))
+
+
+def _scores_table(report, scoreset):
+    labels = [metric_label(scorer) for scorer in scoreset.scorers]
+    interval = f"IC {1 - report.alpha:.0%} ({report.metric_label})"
+    headers = ["Modelo"] + labels + [interval, "Rango medio", "Entrenamiento (s)", "Predicción (s)"]
+    rows = []
+    for model in report.order:
+        row = [report.names[model]]
+        row += [number(scoreset.overall[s.__name__][model]) for s in scoreset.scorers]
+        low, high = report.ci_low[model], report.ci_high[model]
+        row.append(f"{number(low)} – {number(high)}" if np.isfinite(low) else "—")
+        row += [number(report.mean_ranks[model], 2), number(scoreset.train_time[model], 3),
+                number(scoreset.test_time[model], 3)]
         rows.append(row)
-    parts.append(_rows(headers, rows, numeric=range(1, len(headers)), best=0))
+    return TableBlock(headers, rows, numeric=tuple(range(1, len(headers))), best=0, label="Puntuaciones")
+
+
+def _test_table(test, pairs, names):
+    if test == st.BAYES:
+        headers = ["A", "B", "Diferencia (A − B)", "P(A mejor)", "P(equivalentes)", "P(B mejor)", "Decisión"]
+        rows = [[names[p.a], names[p.b], number(p.mean_diff), number(p.p_a, 3), number(p.p_rope, 3),
+                 number(p.p_b, 3), p.decision] for p in pairs]
+        return TableBlock(headers, rows, numeric=(2, 3, 4, 5), label=st.TEST_NAMES[test])
+    effect_name = next((p.effect_name for p in pairs if p.effect_name), "")
+    effect_header = effect_name or "Efecto"
+    headers = ["A", "B", "Estadístico", "p", "p ajustado", "Diferencia (A − B)", "IC", effect_header, "Magnitud", "Decisión"]
+    rows = []
+    for p in pairs:
+        interval = f"{number(p.ci_low)} – {number(p.ci_high)}" if np.isfinite(p.ci_low) else "—"
+        rows.append([names[p.a], names[p.b], number(p.statistic), probability(p.p_value), probability(p.p_adjusted),
+                     number(p.mean_diff), interval, number(p.effect, 3), p.effect_label or "—", p.decision])
+    return TableBlock(headers, rows, numeric=(2, 3, 4, 5, 6, 7), label=st.TEST_NAMES[test])
+
+
+def build_blocks(context, scoreset, report):
+    """Describe el informe completo."""
+    names = report.names
+    specs = figure_specs(report, scoreset)
+    generated = f"{datetime.now():%Y-%m-%d %H:%M}"
+    document = Document(context["title"], f"Test & Score Pro · {dict(context['setup']).get('Conjunto de datos')} · {generated}")
+    blocks = document.blocks
+    blocks.append(Title(context["title"], f"Generado el {generated} con Test & Score Pro"))
+    blocks.append(Result([_localise(line, names) for line in report.recommendation]))
+    blocks.append(Summary(_setup_facts(context, report), _summary_table(report, scoreset), specs[0], len(names)))
+    blocks.append(PageBreak())
+
+    blocks.append(Heading(2, "Datos y muestreo"))
+    blocks.append(TableBlock(["Concepto", "Valor"], [[str(k), _localise(str(v), names)] for k, v in context["setup"]],
+                             key_value=True, label="Datos y muestreo"))
+    if context.get("failures"):
+        blocks.append(Heading(3, "Modelos que han fallado"))
+        blocks.extend(Note(line) for line in context["failures"])
+    blocks.extend(Note(_localise(line, names)) for line in (context.get("notes") or []))
+
+    blocks.append(Heading(2, "Modelos"))
+    blocks.append(TableBlock(["Modelo", "Parámetros"], [[str(n), str(p)] for n, p in context["models"]], label="Modelos"))
+
+    blocks.append(Heading(2, "Reproducibilidad"))
+    blocks.append(TableBlock(["Software", "Versión"], [[k, v] for k, v in versions()], key_value=True,
+                             label="Reproducibilidad"))
+
+    blocks.append(Heading(2, "Puntuaciones"))
+    blocks.append(_scores_table(report, scoreset))
     for scorer in scoreset.scorers:
         if scoreset.undefined.get(scorer.__name__):
-            parts.append(f"<p class='small'>{_esc(metric_label(scorer))}: no definida en "
-                         f"{scoreset.undefined[scorer.__name__]} particiones.</p>")
+            blocks.append(Paragraph(f"{metric_label(scorer)}: no definida en "
+                                    f"{scoreset.undefined[scorer.__name__]} particiones.", small=True))
 
-    parts.append("<h2>Gráficos</h2>")
-    for title, figure in report_figures(report, scoreset):
-        data = base64.b64encode(plots.figure_png(figure, 130)).decode("ascii")
-        parts.append(f"<h3>{_esc(title)}</h3><img alt='{_esc(title)}' src='data:image/png;base64,{data}'>")
+    blocks.append(Heading(2, "Gráficos"))
+    blocks.append(Figures(specs, wide=len(names) > 8))
 
-    parts.append("<h2>Comparaciones estadísticas</h2>")
+    blocks.append(Heading(2, "Comparaciones estadísticas"))
     correction = st.CORRECTIONS.get(report.correction, report.correction)
-    parts.append(f"<p>Métrica: <b>{_esc(report.metric_label)}</b> · α = {report.alpha:g} · "
-                 f"corrección múltiple: {_esc(correction)} · ROPE = ±{report.rope:.4g}</p>")
+    blocks.append(Paragraph(_localise(f"Métrica: {report.metric_label} · α = {report.alpha:g} · corrección múltiple: "
+                                      f"{correction} · ROPE = ±{report.rope:.4g}", names), keep_next=True))
+    seen = set()
     if report.friedman is not None and report.friedman.n_blocks:
         fried = report.friedman
-        parts.append("<h3>Friedman e Iman-Davenport</h3>")
-        parts.append(_rows(
-            ["Estadístico", "Valor", "p"],
-            [["χ² de Friedman", format_number(fried.chi2), format_p(fried.p_value)],
-             ["F de Iman-Davenport", format_number(fried.iman_davenport), format_p(fried.p_iman_davenport)],
-             ["Diferencia crítica (Nemenyi)", format_number(fried.critical_difference), "—"]],
-            numeric=(1, 2)))
-        parts.append(f"<p class='small'>Supuesto: {_esc(fried.assumption)}</p>")
-        parts.extend(f"<div class='note'>{_esc(line)}</div>" for line in fried.warnings)
+        blocks.append(Heading(3, "Friedman e Iman-Davenport"))
+        blocks.append(TableBlock(["Estadístico", "Valor", "p"],
+                                 [["χ² de Friedman", number(fried.chi2), probability(fried.p_value)],
+                                  ["F de Iman-Davenport", number(fried.iman_davenport), probability(fried.p_iman_davenport)],
+                                  ["Diferencia crítica (Nemenyi)", number(fried.critical_difference), "—"]],
+                                 numeric=(1, 2), label="Friedman"))
+        blocks.append(Paragraph(f"Supuesto: {_localise(fried.assumption, names)}", small=True, keep_previous=True))
+        for line in fried.warnings:
+            if line not in seen:
+                seen.add(line)
+                blocks.append(Note(_localise(line, names)))
     for test in report.available:
         pairs = report.pairs_of(test)
-        parts.append(f"<h3>{_esc(st.TEST_NAMES[test])}</h3><p>{_esc(EXPLANATIONS[test])}</p>")
-        if test == st.BAYES:
-            headers = ["A", "B", "Diferencia (A − B)", "P(A mejor)", "P(equivalentes)", "P(B mejor)", "Decisión"]
-            rows = [[_esc(report.names[p.a]), _esc(report.names[p.b]), format_number(p.mean_diff),
-                     format_number(p.p_a, 3), format_number(p.p_rope, 3), format_number(p.p_b, 3),
-                     _esc(p.decision)] for p in pairs]
-            numeric = (2, 3, 4, 5)
-        else:
-            headers = ["A", "B", "Estadístico", "p", "p ajustado", "Diferencia (A − B)", "IC", "Efecto",
-                       "Decisión"]
-            rows = []
-            for p in pairs:
-                interval = f"{format_number(p.ci_low)} – {format_number(p.ci_high)}" if np.isfinite(p.ci_low) else "—"
-                effect = (f"{format_number(p.effect, 3)} ({_esc(p.effect_name)}, {_esc(p.effect_label)})"
-                          if np.isfinite(p.effect) else "—")
-                rows.append([_esc(report.names[p.a]), _esc(report.names[p.b]), format_number(p.statistic),
-                             format_p(p.p_value), format_p(p.p_adjusted), format_number(p.mean_diff),
-                             interval, effect, _esc(p.decision)])
-            numeric = (2, 3, 4, 5)
-        parts.append(_rows(headers, rows, numeric=numeric))
+        blocks.append(Heading(3, st.TEST_NAMES[test]))
+        blocks.append(Paragraph(EXPLANATIONS[test], keep_next=True))
+        blocks.append(_test_table(test, pairs, names))
         if pairs:
-            parts.append(f"<p class='small'>Aporta evidencia sobre: {_esc(pairs[0].evidence)}. "
-                         f"La diferencia es A − B, en {_esc(pairs[0].units)}: en métricas de error y en "
-                         "rangos, un valor negativo significa que A es mejor.</p>")
-        if test == report.primary:
-            parts.append("<ul class='small'>" + "".join(
-                f"<li>{_esc(st.interpret(p, report.names, report.metric_label, report.alpha))}</li>"
-                for p in pairs) + "</ul>")
+            blocks.append(Paragraph(f"Aporta evidencia sobre: {pairs[0].evidence}. La diferencia es A − B, en "
+                                    f"{pairs[0].units}: en métricas de error y en rangos, un valor negativo significa "
+                                    "que A es mejor.", small=True, keep_previous=True))
         assumption = next((p.assumption for p in pairs if p.assumption), "")
         if assumption:
-            parts.append(f"<p class='small'>Supuesto: {_esc(assumption)}</p>")
-        repeated = {}
-        for p in pairs:
-            for line in p.warnings:
-                repeated[line] = repeated.get(line, 0) + 1
-        parts.extend(f"<div class='note'>{_esc(line)}"
-                     + (f" ({count} comparaciones)" if count > 1 else "") + "</div>"
-                     for line, count in repeated.items())
+            blocks.append(Paragraph(f"Supuesto: {_localise(assumption, names)}", small=True, keep_previous=True))
+        if test == report.primary:
+            blocks.append(Heading(4, "Interpretación"))
+            blocks.extend(Paragraph(_localise(st.interpret(p, names, report.metric_label, report.alpha), names),
+                                    small=True, bullet=True) for p in pairs)
+        blocks.extend(Note(line) for line in grouped_warnings(pairs, names, seen))
+    return document
 
-    parts.append("<h2>Reproducibilidad</h2>")
-    parts.append(_rows(["Software", "Versión"], [[_esc(k), _esc(v)] for k, v in versions()]))
+
+# ------------------------------------------------------------------- HTML ----
+
+STYLE = """
+body{font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#1b1b19;
+margin:0 auto;max-width:1040px;padding:24px;line-height:1.5;background:#fff}
+h1{font-size:26px;margin:0 0 4px}h2{font-size:19px;margin:32px 0 10px;border-bottom:2px solid #2a78d6;
+padding-bottom:4px}h3{font-size:15px;margin:22px 0 6px}h4{font-size:13px;margin:12px 0 4px}
+table{border-collapse:collapse;width:100%;font-size:13px;margin:8px 0}
+th,td{border-bottom:1px solid #e5e4df;padding:6px 8px;text-align:left;vertical-align:top}
+th{background:#f4f3ef}td.n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+tr.best td{font-weight:600;background:#e8f1fb}
+.note{background:#fff6e5;border-left:4px solid #eda100;padding:8px 12px;margin:8px 0;font-size:13px}
+.rec{background:#e8f1fb;border-left:4px solid #2a78d6;padding:12px 16px;margin:14px 0}
+.small{color:#52514e;font-size:12px}img{max-width:100%;height:auto}ul.small{margin:4px 0;padding-left:20px}
+.facts{color:#52514e;margin:8px 0}
+"""
+
+
+def _html_table(block):
+    head = "".join(f"<th>{_esc(text)}</th>" for text in block.headers)
+    body = []
+    for index, row in enumerate(block.rows):
+        cells = "".join(f'<td class="n">{_esc(cell)}</td>' if column in block.numeric else f"<td>{_esc(cell)}</td>"
+                        for column, cell in enumerate(row))
+        body.append(f"<tr{' class=best' if index == block.best else ''}>{cells}</tr>")
+    return f"<table><thead><tr>{head}</tr></thead><tbody>{''.join(body)}</tbody></table>"
+
+
+def _html_figure(spec, width=8.6, height=4.0):
+    data = base64.b64encode(plots.figure_png(spec.make(width, height), 130)).decode("ascii")
+    return f"<h3>{_esc(spec.title)}</h3><img alt='{_esc(spec.title)}' src='data:image/png;base64,{data}'>"
+
+
+def render_html(document):
+    parts = []
+    in_list = False
+    for block in document.blocks:
+        if in_list and not (isinstance(block, Paragraph) and block.bullet):
+            parts.append("</ul>")
+            in_list = False
+        if isinstance(block, Title):
+            parts.append(f"<h1>{_esc(block.text)}</h1><p class='small'>{_esc(block.subtitle)}</p>")
+        elif isinstance(block, Result):
+            parts.append("<div class='rec'>" + "<br>".join(_esc(line) for line in block.lines) + "</div>")
+        elif isinstance(block, Summary):
+            parts.append(f"<p class='facts'>{_esc(block.facts)}</p>")
+            parts.append(_html_table(block.table))
+            if len(block.table.rows) < block.total_models:
+                parts.append(f"<p class='small'>Se muestran los {len(block.table.rows)} mejores de "
+                             f"{block.total_models} modelos; la tabla completa está en Puntuaciones.</p>")
+        elif isinstance(block, Heading):
+            parts.append(f"<h{block.level}>{_esc(block.text)}</h{block.level}>")
+        elif isinstance(block, Paragraph):
+            if block.bullet:
+                if not in_list:
+                    parts.append("<ul class='small'>")
+                    in_list = True
+                parts.append(f"<li>{_esc(block.text)}</li>")
+            else:
+                parts.append(f"<p{' class=small' if block.small else ''}>{_esc(block.text)}</p>")
+        elif isinstance(block, Note):
+            parts.append(f"<div class='note'>{_esc(block.text)}</div>")
+        elif isinstance(block, TableBlock):
+            parts.append(_html_table(block))
+        elif isinstance(block, Figures):
+            parts.extend(_html_figure(spec) for spec in block.specs)
+    if in_list:
+        parts.append("</ul>")
     body = "\n".join(parts)
-    return (f"<!doctype html><html lang='es'><head><meta charset='utf-8'><title>{_esc(context['title'])}"
+    return (f"<!doctype html><html lang='es'><head><meta charset='utf-8'><title>{_esc(document.title)}"
             f"</title><meta name='viewport' content='width=device-width, initial-scale=1'>"
             f"<style>{STYLE}</style></head><body>{body}</body></html>")
+
+
+def build_html(context, scoreset, report):
+    return render_html(build_blocks(context, scoreset, report))

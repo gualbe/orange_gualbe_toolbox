@@ -4,7 +4,6 @@ La lógica vive en _tsp_engine.py, _tsp_stats.py, _tsp_plots.py y _tsp_report.py
 salvo la exportación a PDF. Aquí están la interfaz, el estado y el reparto de trabajo:
 evaluar es caro y se hace una sola vez por modelo; analizar y dibujar no reentrenan.
 """
-import re
 import warnings
 from dataclasses import dataclass
 from itertools import count
@@ -12,8 +11,8 @@ from typing import Any, Optional
 
 import numpy as np
 
-from AnyQt.QtCore import QAbstractTableModel, QModelIndex, QSize, QSizeF, QSortFilterProxyModel, Qt, QTimer, QUrl
-from AnyQt.QtGui import QBrush, QColor, QFont, QImage, QPalette, QPixmap, QTextDocument
+from AnyQt.QtCore import QAbstractTableModel, QModelIndex, QSize, QSortFilterProxyModel, Qt, QTimer
+from AnyQt.QtGui import QBrush, QColor, QFont, QImage, QPalette, QPixmap
 from AnyQt.QtWidgets import (
     QAbstractItemView, QComboBox, QDoubleSpinBox, QFileDialog, QGridLayout, QHBoxLayout, QHeaderView,
     QLabel, QMenu, QPushButton, QScrollArea, QSizePolicy, QSpinBox, QTableView, QTabWidget,
@@ -43,8 +42,6 @@ SAMPLE_SIZES = [5, 10, 20, 25, 30, 33, 40, 50, 60, 66, 70, 75, 80, 90, 95]
 ALPHAS = [0.01, 0.05, 0.1]
 TARGET_AVERAGE = "(Promedio de las clases)"
 DEBOUNCE_MS = 150
-A4_LANDSCAPE = (842.0, 595.0)
-PDF_IMAGE_WIDTH = 620
 
 
 # ------------------------------------------------------------------- tareas ----
@@ -92,7 +89,7 @@ class AnalysisDone:
 @dataclass
 class ReportDone:
     path: str
-    html: str
+    layout: Any = None
 
 
 def task_evaluate(request, state):
@@ -130,38 +127,13 @@ def task_analyse(request, state):
 def task_report(context, scoreset, report, path, state):
     state.set_status("Generando el informe…")
     from orangecontrib.orange_gualbe_toolbox.widgets import _tsp_report
-    return ReportDone(path, _tsp_report.build_html(context, scoreset, report))
-
-
-def html_to_pdf(html, path):
-    """Convierte el informe a PDF con Qt; debe llamarse desde el hilo de la interfaz."""
-    import base64
-    from AnyQt.QtGui import QPageLayout
-    from AnyQt.QtPrintSupport import QPrinter
-    images = []
-
-    def collect(match):
-        images.append(base64.b64decode(match.group(1)))
-        return f"src='imagen{len(images) - 1}.png' width='{PDF_IMAGE_WIDTH}'"
-
-    pdf_html = re.sub(r"font-size:\s*(\d+)px", lambda m: f"font-size:{int(m.group(1)) * 0.75:g}px", html)
-    pdf_html = re.sub(r"src='data:image/png;base64,([^']+)'", collect, pdf_html)
-    document = QTextDocument()
-    # Con el tamaño de página en puntos, Qt trata 1 px como 1 pt al imprimir; sin esto
-    # escala cada tabla por su cuenta y salen diminutas.
-    document.setPageSize(QSizeF(A4_LANDSCAPE[0], A4_LANDSCAPE[1]))
-    document.setHtml(pdf_html)
-    # Después de setHtml: setHtml borra los recursos que ya tuviera el documento.
-    for position, data in enumerate(images):
-        image = QImage()
-        image.loadFromData(data)
-        document.addResource(QTextDocument.ImageResource, QUrl(f"imagen{position}.png"), image)
-    printer = QPrinter(QPrinter.HighResolution)
-    printer.setOutputFormat(QPrinter.PdfFormat)
-    printer.setPageOrientation(QPageLayout.Landscape)
-    printer.setOutputFileName(path)
-    printing = getattr(document, "print", None) or document.print_
-    printing(printer)
+    document = _tsp_report.build_blocks(context, scoreset, report)
+    if path.lower().endswith(".pdf"):
+        from orangecontrib.orange_gualbe_toolbox.widgets import _tsp_pdf
+        return ReportDone(path, _tsp_pdf.render_pdf(document, path))
+    with open(path, "w", encoding="utf-8") as stream:
+        stream.write(_tsp_report.render_html(document))
+    return ReportDone(path)
 
 
 # ------------------------------------------------------------------ modelos ----
@@ -405,6 +377,7 @@ class OWTestScorePro(OWWidget, ConcurrentWidgetMixin):
         self._sampling_used = None
         self._sampling_notes = []
         self._pending_analysis = False
+        self._report_layout = None
         self._after_task = QTimer(self, singleShot=True, interval=0)
         self._after_task.timeout.connect(self._start_analysis)
         self._debounce = QTimer(self, singleShot=True, interval=DEBOUNCE_MS)
@@ -1220,15 +1193,7 @@ class OWTestScorePro(OWWidget, ConcurrentWidgetMixin):
 
     def _on_report_done(self, done):
         self.Error.report.clear()
-        try:
-            if done.path.lower().endswith(".pdf"):
-                html_to_pdf(done.html, done.path)
-            else:
-                with open(done.path, "w", encoding="utf-8") as stream:
-                    stream.write(done.html)
-        except OSError as error:
-            self.Error.report(str(error))
-            return
+        self._report_layout = done.layout
         self.Information.report_saved(done.path)
 
     def send_report(self):

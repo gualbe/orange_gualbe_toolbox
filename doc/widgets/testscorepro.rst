@@ -157,7 +157,8 @@ afirmar equivalencia, mira la probabilidad bayesiana de equivalencia.
 Exportar el informe
 -------------------
 
-**Exportar informe…** crea un HTML autocontenido, con las imágenes incrustadas, o un PDF. Incluye
+**Exportar informe…** crea un HTML autocontenido, con las imágenes incrustadas, o un PDF en A4 apaisado
+con una primera página de resumen. Incluye
 los datos, el muestreo y la semilla, los modelos y sus parámetros, las puntuaciones, los gráficos,
 cada test con su supuesto e interpretación, y las versiones del software para reproducirlo.
 También funciona el informe nativo de Orange.
