@@ -101,7 +101,9 @@ Antes de tocar widgets, ayuda o empaquetado lee
   valor p. Se agrupa por cercanía, no con una rejilla.
 - Suelo absoluto por métrica (`noise_floor`), para cuando la métrica vale casi cero, como en un
   ajuste perfecto: 1e-13 × su escala natural (1 en las acotadas y LogLoss, 100 en MAPE, SMAPE y
-  CVRMSE, escala de `y` en RMSE y MAE, su cuadrado en MSE). Una métrica desconocida no lleva suelo.
+  CVRMSE, escala de `y` en RMSE y MAE). En MSE no vale el cuadrado de la escala, porque ocultaría
+  diferencias reales con `y` muy desplazada: su ruido es 2·δ·RMSE + δ², con δ = 1e-13·máx|y|, valor
+  a valor por partición. Una métrica desconocida no lleva suelo.
 - 10 particiones por defecto (el nativo, 5), porque con menos los tests apenas tienen potencia.
   Semilla 42 por defecto, la del nativo, para que las particiones coincidan.
 - Un hilo por modelo, solo con 5.000 filas o más y sin preprocesador compartido. Cambiar métrica,
