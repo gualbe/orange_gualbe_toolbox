@@ -90,8 +90,11 @@ Antes de tocar widgets, ayuda o empaquetado lee
 - Orientación: por dentro, puntuaciones orientadas (positivo = A mejor). Lo que ve el usuario
   (tabla, salida, informe) es siempre valor(A) − valor(B) en las unidades de la métrica; en
   errores y rangos, negativo significa que A es mejor. Cada test decide con su propio estadístico.
-- Lo que solo difiere por redondeo (tolerancia relativa 1e-12) es igual; una diferencia constante
-  es «no evaluable», no evidencia.
+- Lo que solo difiere por redondeo (tolerancia relativa 1e-13) es igual; una diferencia constante
+  es «no evaluable», no evidencia. La tolerancia va siempre valor a valor, con la escala de cada
+  partición o de cada pareja de valores contiguos en los rangos: una escala global, incluso por
+  bloque, hace que un solo valor enorme borre las diferencias reales del resto. Los empates de
+  Wilcoxon se agrupan por cercanía, no con una rejilla.
 - 10 particiones por defecto (el nativo, 5), porque con menos los tests apenas tienen potencia.
   Semilla 42 por defecto, la del nativo, para que las particiones coincidan.
 - Un hilo por modelo, solo con 5.000 filas o más y sin preprocesador compartido. Cambiar métrica,
