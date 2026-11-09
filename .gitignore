@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.DS_Store
+
+# Ayuda HTML generada con Sphinx a partir de doc/ (se reconstruye antes de cada build)
+orangecontrib/orange_gualbe_toolbox/_help/
+.venv/
+
+# Ajustes locales de Claude Code
+.claude/settings.local.json
