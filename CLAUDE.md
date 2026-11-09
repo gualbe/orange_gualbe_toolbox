@@ -109,6 +109,16 @@ Antes de tocar widgets, ayuda o empaquetado lee
 - Un hilo por modelo, solo con 5.000 filas o más y sin preprocesador compartido. Cambiar métrica,
   α o ROPE no reentrena; tampoco se reentrena un modelo que no ha cambiado.
 - Salidas nuevas: Scores, Fold Scores, Pairwise Comparisons, Ranks y Best Learner.
+- Informe: `_tsp_report.py` describe el contenido como una lista de bloques y lo dibuja en HTML;
+  `_tsp_pdf.py` lo maqueta en PDF. Cualquier cambio de contenido se hace en los bloques, para que
+  los dos formatos digan lo mismo. Un solo formato numérico: coma decimal y científica uniforme.
+- PDF con `QPainter` sobre `QPdfWriter`, midiendo alturas, en el hilo de la tarea. `QTextDocument` no
+  mantiene un título con su contenido y `QtWebEngine` obliga al hilo de la interfaz. A4 apaisado por
+  las tablas anchas y los gráficos. `render_pdf` devuelve un registro de posiciones para los tests.
+- Maquetación: títulos, introducciones (`keep_next`) y pies de tabla (`keep_previous`) van con su
+  contenido; no se parte una tabla de 8 filas o menos ni la que ocupa menos del 45 % de la altura
+  útil; las largas repiten cabecera y dejan al menos 3 filas por página; los números no se parten.
+  Al cambiar la maquetación, abre las páginas renderizadas: los tests no ven recortes en los gráficos.
 
 ## Widgets
 
