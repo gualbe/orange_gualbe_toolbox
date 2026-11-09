@@ -13,7 +13,8 @@ Antes de tocar widgets, ayuda o empaquetado lee
   normalizado como `orange-gualbe-toolbox`).
 - Categoría: «Toolbox Gualbe», color `#7B68EE`.
 - Dependencias: `Orange3>=3.32.0`, `imbalanced-learn`, `pandas>=2.0` (File Import usa
-  `format="ISO8601"`), `openpyxl` y `xlrd`. Sin más límites de versión.
+  `format="ISO8601"`), `openpyxl`, `xlrd`, `baycomp`, `scipy>=1.9` (Wilcoxon con `method`)
+  y `matplotlib`. Sin más límites de versión. `statsmodels` solo se usa en los tests.
 - Repo público https://github.com/gualbe/orange_gualbe_toolbox (rama `main`, fuente de
   verdad) · PyPI https://pypi.org/project/orange-gualbe-toolbox/
 - Idioma de la ayuda: `es`.
@@ -71,12 +72,39 @@ Antes de tocar widgets, ayuda o empaquetado lee
 - El estado se guarda por origen en `source_configs`: la clave es el nombre del
   archivo (sobrevive a mover el workflow) o la URL.
 
+### Decisiones del widget Test & Score Pro (tomadas en su alta, 2026-11-09)
+
+- Pedido por el usuario: partir de Test & Score, con más visualización, comparaciones, tests
+  no paramétricos y bayesianos, informe exportable y tablas de resultados en la salida.
+- Partes sin Qt: `_tsp_stats.py` (tests), `_tsp_engine.py` (evaluación y salidas),
+  `_tsp_plots.py` (figuras) y `_tsp_report.py` (informe). Mismos `scorers` y `Results` que el
+  nativo: las puntuaciones y las salidas Predictions y Evaluation Results deben coincidir.
+- Rigor: las particiones no son independientes. El test principal con particiones es el t de
+  Nadeau-Bengio. El t clásico solo se ofrece como referencia, con aviso. Friedman, Nemenyi y
+  Wilcoxon sobre particiones son orientativos y lo dicen, también en la propia figura.
+- Bayesiano: `baycomp` con validación cruzada (ρ = 1/k); en el resto, su misma posterior con
+  ρ = n_test / n_total, que `baycomp` no permite elegir.
+- Sin particiones (dejar uno fuera, sobre entrenamiento, sobre test): McNemar o tests por filas
+  e intervalos por remuestreo de filas. McNemar compara aciertos y los tests por filas, error
+  absoluto: la recomendación no afirma evidencia sobre otra métrica.
+- Orientación: por dentro, puntuaciones orientadas (positivo = A mejor). Lo que ve el usuario
+  (tabla, salida, informe) es siempre valor(A) − valor(B) en las unidades de la métrica; en
+  errores y rangos, negativo significa que A es mejor. Cada test decide con su propio estadístico.
+- Lo que solo difiere por redondeo (tolerancia relativa 1e-12) es igual; una diferencia constante
+  es «no evaluable», no evidencia.
+- 10 particiones por defecto (el nativo, 5), porque con menos los tests apenas tienen potencia.
+  Semilla 42 por defecto, la del nativo, para que las particiones coincidan.
+- Un hilo por modelo, solo con 5.000 filas o más y sin preprocesador compartido. Cambiar métrica,
+  α o ROPE no reentrena; tampoco se reentrena un modelo que no ha cambiado.
+- Salidas nuevas: Scores, Fold Scores, Pairwise Comparisons, Ranks y Best Learner.
+
 ## Widgets
 
 | Widget | Fichero / clase | Qué hace |
 |---|---|---|
 | SMOTE | `owsmote.py` / `OWSmote` | Balancea las clases con instancias sintéticas (SMOTE, SMOTENC o SMOTEN); gráfico antes/después. |
 | File Import | `owfileimport.py` / `OWFileImport` (motor en `_fileimport.py`) | Importa desde archivo o URL (CSV, TSV, TAB, XLS/XLSX y ARFF) con vista previa, edición de columnas e importación avanzada. |
+| Test & Score Pro | `owtestscorepro.py` / `OWTestScorePro` (`_tsp_*.py`) | Evalúa modelos como Test & Score y los compara con tests rigurosos, gráficos, tablas de resultados e informe HTML o PDF. |
 
 ## Pruebas
 
