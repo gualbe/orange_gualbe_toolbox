@@ -141,7 +141,8 @@ azar. Por defecto se ajustan con Holm; también están Bonferroni, Benjamini-Hoc
 corrección.
 
 **Tamaños de efecto**: un valor p no dice si la diferencia importa. La g de Hedges (t) y la r
-biserial de rangos (Wilcoxon) la miden: insignificante, pequeña, media o grande.
+biserial de rangos (Wilcoxon) la miden: insignificante, pequeña, media o grande. En McNemar, el
+efecto es la razón entre las filas en que solo acierta A y aquellas en que solo acierta B.
 
 **Intervalos de confianza**: con particiones usan la misma corrección de Nadeau-Bengio. Sin
 particiones, proceden de un remuestreo de las filas.

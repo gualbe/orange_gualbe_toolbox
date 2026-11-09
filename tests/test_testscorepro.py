@@ -21,6 +21,7 @@ from statsmodels.stats.contingency_tables import mcnemar as sm_mcnemar
 from statsmodels.stats.multitest import multipletests
 
 from AnyQt.QtWidgets import QApplication
+import Orange.base
 from Orange.base import Learner
 from Orange.classification import (
     LogisticRegressionLearner, MajorityLearner, NaiveBayesLearner, RandomForestLearner, TreeLearner,
@@ -203,6 +204,46 @@ check(cerca(izquierda, derecha), "intervalo sin varianza real: es un punto")
 empates = np.array([[0.1 + 0.2, 0.3, 0.5], [0.3, 0.1 + 0.2, 0.5], [0.1, 0.1, 0.1]]).T
 rangos, _ = st.rank_blocks(empates)
 check(rangos[0, 0] == rangos[1, 0] and rangos[0, 1] == rangos[1, 1], "Friedman: empate con ruido es empate")
+
+# Tolerancia por valor: una escala enorme en una partición no borra las demás.
+a = np.array([1e15, .21, .25, .19, .22, .26, .2, .24, .23, .18])
+b = np.array([1e15, .23, .28, .2, .25, .27, .23, .26, .24, .2])
+r = st.corrected_ttest(a, b, 1 / 9)
+d = a - b
+manual = d.mean() / np.sqrt(d.var(ddof=1) * (1 / 10 + 1 / 9))
+check(cerca(r.statistic, manual) and r.p_value < 1 and r.decision != st.SAME, f"escala enorme: t real ({r.statistic}, {r.p_value})")
+check(not any("idénticas" in w for w in r.warnings), "escala enorme: no se dicen idénticas")
+w = st.wilcoxon_test(a, b)
+# Las diferencias reales son múltiplos de 0,01: hay empates de verdad entre ellas.
+referencia = stats.wilcoxon(np.round((a - b)[1:], 2), method="approx", correction=True).pvalue
+check(cerca(w.p_value, referencia, 1e-12) and w.n == 10 and w.decision != st.SAME, f"escala enorme: Wilcoxon real ({w.p_value})")
+check(any("1 empates" in x for x in w.warnings), f"escala enorme: solo la partición idéntica es empate {w.warnings}")
+bloques = np.array([[1e12, 1e12 * 1.5, 1e12 * .9], [.08, .09, .1], [.2, .25, .3]])
+rangos, _ = st.rank_blocks(-bloques)
+check(np.array_equal(rangos[1], [1, 1, 1]) and np.array_equal(rangos[2], [2, 2, 2]) and np.array_equal(rangos[0], [3, 3, 3]),
+      f"rangos: un valor enorme no empata a los demás {rangos.tolist()}")
+
+# El caso del redondeo sigue siendo no evaluable y las varianzas reales pequeñas, evaluables.
+a = np.array([14, 13, 15, 13, 14, 14, 13, 12, 14, 13]) / 15
+b = np.array([13, 12, 14, 12, 13, 13, 12, 11, 13, 12]) / 15
+r = st.corrected_ttest(a, b, 1 / 9)
+check(np.isnan(r.p_value) and r.decision == st.NOT_AVAILABLE, "redondeo: sigue no evaluable")
+check(abs(st.wilcoxon_test(a, b).p_value - 0.001904) < 5e-6, "redondeo: Wilcoxon 0,001904")
+aleatorio = np.random.RandomState(3)
+base = aleatorio.uniform(.7, .9, 10)
+for sd in (1e-6, 1e-9, 1e-11):
+    ruido = np.abs(aleatorio.normal(0, sd, 10)) + 5 * sd
+    otro = base - ruido
+    r = st.corrected_ttest(base, otro, 1 / 9)
+    w = st.wilcoxon_test(base, otro)
+    check(np.isfinite(r.p_value) and r.decision != st.SAME, f"sd {sd}: t evaluable")
+    check(not any("empat" in x for x in w.warnings), f"sd {sd}: Wilcoxon sin empates falsos {w.warnings}")
+    check(abs(w.p_value - 2 / 1024) < 1e-9, f"sd {sd}: Wilcoxon exacto ({w.p_value})")
+for escala in (1e6, 1e-6):
+    x, y = base + aleatorio.normal(0, .01, 10), base + aleatorio.normal(0, .01, 10)
+    uno, dos = st.corrected_ttest(x, y, 1 / 9), st.corrected_ttest(x * escala, y * escala, 1 / 9)
+    check(cerca(uno.statistic, dos.statistic, 1e-6) and cerca(st.wilcoxon_test(x, y).p_value, st.wilcoxon_test(x * escala, y * escala).p_value),
+          f"la escala {escala} no cambia el resultado")
 
 # Cada test decide con su propio estadístico.
 sesgado = np.array([-.01, -.011, -.012, -.013, -.014, -.015, -.016, -.017, -.018, -.019, -.021, .6])
@@ -577,6 +618,63 @@ check("No se ha podido evaluar" in " ".join(con_ruido.recommendation) and "Super
       "recomendación: varianza nula no es evidencia")
 banco.cerrar()
 
+# Casos reales con escalas extremas.
+semilla = np.random.RandomState(0)
+X = semilla.normal(size=(150, 3))
+y = X @ [1, 2, -1] + semilla.normal(size=150) * .5 + 10
+y[7] = 1e-15
+atributos = [ContinuousVariable(f"x{i}") for i in range(3)]
+extrema = Table.from_numpy(Domain(atributos, ContinuousVariable("y")), X, y)
+banco = Banco(comparison_metric="MAPE").datos(extrema).modelos(LinearRegressionLearner(), MeanLearner()).correr()
+scoreset, informe = banco.w._scoreset, banco.w._analysis
+pareja = informe.pairs_of(st.WILCOXON)[0]
+crudas = -(scoreset.folds["MAPE"][0] - scoreset.folds["MAPE"][1])
+referencia = stats.wilcoxon(crudas, method="exact").pvalue
+check(cerca(pareja.p_value, referencia, 1e-12) and pareja.p_value < 1, f"MAPE con y≈0: Wilcoxon real ({pareja.p_value})")
+check(pareja.n == 10 and np.abs(crudas).max() > 1e10, "MAPE con y≈0: la escala es extrema de verdad")
+check(not any("empat" in x for x in pareja.warnings), f"MAPE con y≈0: sin empates falsos {pareja.warnings}")
+banco.cerrar()
+
+
+class Divergente(Learner):
+    name = "divergente"
+
+    class Modelo(Orange.base.Model):
+        def predict(self, X):
+            return np.full(len(X), 1e6)
+
+    def fit_storage(self, data):
+        return Divergente.Modelo(data.domain)
+
+
+X = semilla.normal(size=(200, 3))
+y = np.clip(.5 + .15 * (X @ [1, 2, -1]) + semilla.normal(size=200) * .05, 0, 1)
+acotada = Table.from_numpy(Domain(atributos, ContinuousVariable("y")), X, y)
+banco = Banco(comparison_metric="MSE").datos(acotada).modelos(LinearRegressionLearner(), MeanLearner(), Divergente()).correr()
+informe = banco.w._analysis
+check(list(informe.mean_ranks) == [1.0, 2.0, 3.0], f"modelo divergente: rangos 1, 2, 3 ({list(informe.mean_ranks)})")
+nemenyi = next(p for p in informe.pairs_of(st.NEMENYI) if (p.a, p.b) == (0, 1))
+check(nemenyi.p_value < 1 and nemenyi.decision != st.SAME, f"modelo divergente: Nemenyi no empata ({nemenyi.p_value})")
+corregido = next(p for p in informe.pairs_of(st.TTEST_CORRECTED) if (p.a, p.b) == (0, 1))
+check(corregido.p_value < 0.05 and corregido.decision == st.A_BETTER, "modelo divergente: el t corregido ve la diferencia")
+banco.cerrar()
+
+# McNemar dice que su efecto es una razón.
+banco = Banco(resampling=OWTestScorePro.LOO, comparison_metric="AUC").datos(clasif[:60]).modelos(LogisticRegressionLearner(), TreeLearner(), MajorityLearner()).correr()
+banco.w.details_combo.setCurrentIndex(banco.w.details_combo.findData(st.MCNEMAR))
+banco.w._fill_details()
+check("Razón A/B" in banco.w.details_model.headers and "Efecto (A − B)" not in banco.w.details_model.headers, "McNemar: la columna dice razón A/B")
+check(banco.w._analysis.pairs_of(st.MCNEMAR)[0].effect_name == "razón de discordancias (A/B)", "McNemar: nombre del efecto")
+texto = " ".join(banco.w._analysis.recommendation)
+check("comete menos errores" not in texto, f"redacción natural ({texto})")
+if "supera a" in texto:
+    check("En aciertos por fila" in texto, "McNemar: redacción de la evidencia")
+ruta = os.path.join(DIR, "razon.html")
+banco.w.export_report(ruta)
+banco.esperar()
+check("razón de discordancias (A/B)" in open(ruta, encoding="utf-8").read(), "McNemar: el informe dice que es una razón")
+banco.cerrar()
+
 # Modelos con el mismo nombre: igual que el nativo.
 nativo = Nativo()
 nativo.ejecutar(clasif, None, [LogisticRegressionLearner(), LogisticRegressionLearner()])
@@ -607,6 +705,16 @@ check(any("no son independientes" in texto.get_text() for texto in figura.texts)
 banco.w._analysis.friedman.on_folds = False
 figura = plots.critical_difference_figure(banco.w._analysis, 8, 4, plots.LIGHT)
 check(not any("no son independientes" in texto.get_text() for texto in figura.texts), "diagrama: sin aviso si no son particiones")
+banco.w._analysis.friedman.on_folds = True
+for ancho, alto in ((6.89, 4.6), (4.0, 3.0), (9.0, 5.0)):
+    figura = plots.critical_difference_figure(banco.w._analysis, ancho, alto, plots.LIGHT)
+    figura.canvas.draw()
+    pie = next(t for t in figura.texts if "no son independientes" in t.get_text())
+    caja = pie.get_window_extent(figura.canvas.get_renderer())
+    w_fig, h_fig = figura.canvas.get_width_height()
+    check(caja.x0 >= 0 and caja.x1 <= w_fig and caja.y0 >= 0, f"pie entero a {ancho} pulgadas ({caja.x0:.0f}-{caja.x1:.0f} de {w_fig})")
+    ejes = figura.axes[0].get_tightbbox(figura.canvas.get_renderer())
+    check(caja.y1 <= ejes.y0 + 6, f"el pie no pisa el diagrama a {ancho} pulgadas ({caja.y1:.0f}, {ejes.y0:.0f})")
 banco.cerrar()
 
 # n_train real con muestreo por característica y valores perdidos.

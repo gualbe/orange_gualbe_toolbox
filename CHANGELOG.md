@@ -3,6 +3,15 @@
 Cada versión se publica a la vez en GitHub (release `vX.Y.Z`) y en
 [PyPI](https://pypi.org/project/orange-gualbe-toolbox/).
 
+## 0.3.2 (2026-11-09)
+
+- Corregido en **Test & Score Pro**: con valores de escala muy distinta (un modelo que diverge, una
+  partición enorme), la tolerancia al redondeo ocultaba diferencias reales entre otros modelos o
+  particiones. Ahora cada valor se compara con su propia escala.
+- Corregido: el aviso del diagrama de diferencias críticas se ajusta al ancho de la figura.
+- Mejoras de redacción: la recomendación cuando se apoya en McNemar y el efecto de McNemar, que se
+  indica como razón A/B.
+
 ## 0.3.1 (2026-11-09)
 
 - Corregido en **Test & Score Pro**: diferencias casi constantes por redondeo ya no se toman por

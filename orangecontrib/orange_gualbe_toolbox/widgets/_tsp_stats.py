@@ -16,9 +16,10 @@ from scipy import stats
 ALPHA_DEFAULT = 0.05
 BAYES_DECISION = 0.95
 MIN_FRIEDMAN_BLOCKS = 10
-# Dos valores que difieren menos que esto, en relación con la escala de los datos, son
-# iguales: 14/15 - 13/15 no da exactamente lo mismo que 13/15 - 12/15.
-RELATIVE_TOLERANCE = 1e-12
+# Dos valores que difieren menos que esto, en relación con su propia escala, son iguales:
+# 14/15 - 13/15 no da exactamente lo mismo que 13/15 - 12/15. Siempre se aplica valor a
+# valor: una escala global haría que un solo valor enorme borrase las diferencias del resto.
+RELATIVE_TOLERANCE = 1e-13
 
 TTEST_CORRECTED = "corrected_t"
 TTEST_PAIRED = "paired_t"
@@ -103,23 +104,45 @@ def paired_values(a, b):
     return a[keep], b[keep], int((~keep).sum())
 
 
-def _tolerance(*arrays):
-    """Tolerancia absoluta, proporcional al mayor valor presente en los datos."""
-    scale = 0.0
-    for array in arrays:
-        array = np.asarray(array, dtype=float)
-        finite = array[np.isfinite(array)]
-        if finite.size:
-            scale = max(scale, float(np.abs(finite).max()))
-    return RELATIVE_TOLERANCE * scale
-
-
 def clean_differences(a, b):
-    """Diferencias sin ruido de coma flotante: lo que la tolerancia no separa, es igual."""
-    tolerance = _tolerance(a, b)
-    if tolerance == 0:
-        return np.zeros_like(a, dtype=float)
-    return np.rint((a - b) / tolerance) * tolerance
+    """Diferencias sin ruido de coma flotante.
+
+    Son cero las que no superan el redondeo de sus propios valores, y las de valor absoluto
+    casi igual pasan a ser exactamente iguales, para que los rangos las traten como empates.
+    Se agrupa por cercanía y no con una rejilla, que crearía empates donde no los hay.
+    """
+    a, b = np.asarray(a, dtype=float), np.asarray(b, dtype=float)
+    differences = a - b
+    tolerances = RELATIVE_TOLERANCE * np.maximum(np.abs(a), np.abs(b))
+    differences[np.abs(differences) <= tolerances] = 0.0
+    nonzero = np.flatnonzero(differences)
+    if len(nonzero) < 2:
+        return differences
+    magnitudes = np.abs(differences[nonzero])
+    order = np.argsort(magnitudes, kind="stable")
+    ordered, allowed = magnitudes[order], tolerances[nonzero][order]
+    # Un empate exige estar dentro del redondeo de los dos valores: gana la tolerancia menor.
+    starts = np.r_[True, np.diff(ordered) > np.minimum(allowed[:-1], allowed[1:])]
+    representative = ordered[np.flatnonzero(starts)][np.cumsum(starts) - 1]
+    merged = magnitudes.copy()
+    merged[order] = representative
+    differences[nonzero] = np.sign(differences[nonzero]) * merged
+    return differences
+
+
+def _nearly_constant(values):
+    return bool(np.ptp(values) <= RELATIVE_TOLERANCE * np.max(np.abs(values)))
+
+
+def _rank_block(values):
+    """Rangos de un bloque (1 el mejor); los valores casi iguales empatan."""
+    order = np.argsort(-values, kind="stable")
+    ordered = values[order]
+    limits = RELATIVE_TOLERANCE * np.maximum(np.abs(ordered[:-1]), np.abs(ordered[1:]))
+    groups = np.r_[0, np.cumsum(np.abs(np.diff(ordered)) > limits)]
+    ranks = np.empty(len(values))
+    ranks[order] = stats.rankdata(groups)
+    return ranks
 
 
 def _undefined_warning(n_removed):
@@ -196,7 +219,7 @@ def _t_family(a, b, ratio, test, assumption, alpha):
     result.p_value = float(2 * stats.t.sf(abs(t_value), df))
     result.ci_low, result.ci_high = mean - half, mean + half
     result.effect = hedges_g(differences)
-    result.effect_name = "g de Hedges"
+    result.effect_name = "g de Hedges, A − B"
     result.effect_label = effect_label_cohen(result.effect)
     if n < 5:
         result.warnings.append(f"Solo {n} particiones: la potencia del test es muy baja.")
@@ -274,7 +297,7 @@ def wilcoxon_test(a, b, test=WILCOXON, assumption=None, alpha=ALPHA_DEFAULT):
     positive, negative = signed_ranks(nonzero)
     result.direction = int(np.sign(positive - negative))
     result.effect = (positive - negative) / (positive + negative)
-    result.effect_name = "r biserial de rangos"
+    result.effect_name = "r biserial de rangos, A − B"
     result.effect_label = effect_label_rank(result.effect)
     smallest = 2 / 2 ** len(nonzero)
     if smallest > alpha:
@@ -431,10 +454,9 @@ def rank_blocks(scores):
     scores = np.asarray(scores, dtype=float)
     complete = np.all(np.isfinite(scores), axis=0)
     blocks = scores[:, complete]
-    tolerance = _tolerance(blocks)
-    if tolerance > 0:
-        blocks = np.rint(blocks / tolerance)
-    return stats.rankdata(-blocks, axis=0), int((~complete).sum())
+    if not blocks.size:
+        return blocks, int((~complete).sum())
+    return np.column_stack([_rank_block(column) for column in blocks.T]), int((~complete).sum())
 
 
 def friedman_from_mean_ranks(mean_ranks, n):
@@ -560,8 +582,7 @@ def corrected_interval(values, test_train_ratio, alpha=ALPHA_DEFAULT):
     if n < 2:
         return np.nan, np.nan
     mean = float(np.mean(values))
-    tolerance = _tolerance(values)
-    if tolerance == 0 or np.ptp(np.rint(values / tolerance)) == 0:
+    if _nearly_constant(values):
         return mean, mean
     scale = np.sqrt(np.var(values, ddof=1) * (1 / n + test_train_ratio))
     half = stats.t.ppf(1 - alpha / 2, n - 1) * scale

@@ -194,7 +194,7 @@ def build_html(context, scoreset, report):
                      _esc(p.decision)] for p in pairs]
             numeric = (2, 3, 4, 5)
         else:
-            headers = ["A", "B", "Estadístico", "p", "p ajustado", "Diferencia (A − B)", "IC", "Efecto (A − B)",
+            headers = ["A", "B", "Estadístico", "p", "p ajustado", "Diferencia (A − B)", "IC", "Efecto",
                        "Decisión"]
             rows = []
             for p in pairs:

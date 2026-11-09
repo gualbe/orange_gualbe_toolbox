@@ -1091,7 +1091,8 @@ class OWTestScorePro(OWWidget, ConcurrentWidgetMixin):
         if bayes:
             headers = ["A", "B", "Diferencia (A − B)", "P(A mejor)", "P(equiv.)", "P(B mejor)", "Decisión"]
         else:
-            headers = ["A", "B", "Estadístico", "p", "p ajustado", "Diferencia (A − B)", "IC", "Efecto (A − B)",
+            effect_header = "Razón A/B" if test == st.MCNEMAR else "Efecto (A − B)"
+            headers = ["A", "B", "Estadístico", "p", "p ajustado", "Diferencia (A − B)", "IC", effect_header,
                        "Decisión"]
         rows, sort_values = [], []
         tooltips = {}

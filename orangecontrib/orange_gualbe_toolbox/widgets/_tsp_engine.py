@@ -640,9 +640,9 @@ def _recommend(report, scoreset):
             lines.append(f"Supera con evidencia ({label}, α = {report.alpha:g}) a: "
                          f"{_shown(names, clearly)}.")
         else:
-            lines.append(f"Aparte de {report.metric_label}, comete menos errores en {evidence} "
-                         f"({label}, α = {report.alpha:g}) que: {_shown(names, clearly)}. Ese test "
-                         f"no mide {report.metric_label}, así que no es evidencia sobre esa métrica.")
+            lines.append(f"En {evidence} ({label}, α = {report.alpha:g}) supera a: "
+                         f"{_shown(names, clearly)}. Ese test no mide {report.metric_label}, así que "
+                         "no es evidencia sobre esa métrica.")
     if close:
         where = "" if about_metric else f" en {evidence} (no en {report.metric_label})"
         lines.append(f"No se puede distinguir{where} con estos datos de: {_shown(names, close)}.")
@@ -711,7 +711,7 @@ def pairs_table(report):
     if not report.pairs:
         return None
     numeric = ("Estadístico", "p", "p ajustado", "Diferencia (A − B)", "IC inferior", "IC superior",
-               "Efecto (A − B)", "P(A mejor)", "P(equivalentes)", "P(B mejor)")
+               "Efecto", "P(A mejor)", "P(equivalentes)", "P(B mejor)")
     X = [[pair.statistic, pair.p_value, pair.p_adjusted, pair.mean_diff, pair.ci_low,
           pair.ci_high, pair.effect, pair.p_a, pair.p_rope, pair.p_b] for pair in report.pairs]
     tests = sorted({pair.test for pair in report.pairs})

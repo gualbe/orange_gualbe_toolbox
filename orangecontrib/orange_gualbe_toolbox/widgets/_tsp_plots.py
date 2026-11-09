@@ -3,6 +3,7 @@
 El widget y el informe usan exactamente las mismas figuras.
 """
 import io
+import textwrap
 from dataclasses import dataclass
 
 import numpy as np
@@ -23,6 +24,9 @@ class Theme:
     opposite: str = "#eb6834"
     neutral: str = "#b9b8b0"
 
+
+CAPTION_POINTS = 8.5
+CAPTION_WIDTH_FACTOR = 0.56  # ancho medio de un carácter respecto al tamaño de letra
 
 LIGHT = Theme()
 DARK = Theme("#262624", "#f0efec", "#c3c2b7", "#3b3b38", "#3987e5", "#d95926", "#6f6e68")
@@ -88,6 +92,17 @@ def scores_figure(report, scoreset, width, height, theme):
     return figure
 
 
+def _add_caption(figure, paragraphs, theme):
+    """Pie de figura ajustado al ancho, con su espacio reservado bajo los ejes."""
+    width, height = figure.get_size_inches()
+    per_line = max(int(width * 72 / (CAPTION_POINTS * CAPTION_WIDTH_FACTOR)), 20)
+    lines = [line for paragraph in paragraphs for line in textwrap.wrap(paragraph, per_line)]
+    reserved = (len(lines) * CAPTION_POINTS * 1.3 + 8) / 72 / height
+    figure.get_layout_engine().set(rect=(0, reserved, 1, 1 - reserved))
+    figure.text(0.5, 0.008, "\n".join(lines), ha="center", va="bottom", fontsize=CAPTION_POINTS,
+                color=theme.muted, linespacing=1.3)
+
+
 def critical_difference_figure(report, width, height, theme):
     """Diagrama de diferencias críticas de Demšar."""
     friedman = report.friedman
@@ -133,12 +148,12 @@ def critical_difference_figure(report, width, height, theme):
         y = -0.32 - 0.14 * level
         ax.plot([ranks[order[start]] - 0.04, ranks[order[end]] + 0.04], [y, y],
                 color=theme.muted, linewidth=3.5, solid_capstyle="round")
-    caption = ("Rango medio (1 es el mejor). Los modelos unidos por una barra no se distinguen "
-               "según Nemenyi.")
+    caption = ["Rango medio (1 es el mejor). Los modelos unidos por una barra no se distinguen "
+               "según Nemenyi."]
     if friedman.on_folds:
-        caption += ("\nLos bloques son particiones de un solo conjunto de datos, que no son "
-                    "independientes: diagrama descriptivo, no prueba de generalización.")
-    figure.text(0.5, 0.01, caption, ha="center", va="bottom", fontsize=8.5, color=theme.muted)
+        caption.append("Los bloques son particiones de un solo conjunto de datos, que no son "
+                       "independientes: diagrama descriptivo, no prueba de generalización.")
+    _add_caption(figure, caption, theme)
     return figure
 
 
