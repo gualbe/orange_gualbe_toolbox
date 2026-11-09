@@ -22,6 +22,7 @@ import re
 import socket
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -70,6 +71,15 @@ DEFAULT_MAX_DOWNLOAD_MB = 500
 MAX_REDIRECTS = 5
 USER_AGENT = "orange-gualbe-toolbox (File Import)"
 DOWNLOAD_BLOCK = 256 * 1024
+DOWNLOAD_POLL = 0.05
+DOWNLOAD_STOP_WAIT = 0.5
+HTML_SNIFF_BYTES = 1024
+# Lo descargado puede ocupar al descomprimirse hasta 100 veces su tamaño (los CSV
+# reales rara vez pasan de 30), con un mínimo para archivos pequeños y un máximo
+# de 10 veces la descarga máxima. Los archivos locales no se limitan.
+MAX_COMPRESSION_RATIO = 100
+MIN_DECOMPRESSED = 16 * 1024 * 1024
+DECOMPRESSED_PER_DOWNLOAD = 10
 
 
 # Un campo de texto muy largo no debe impedir analizar la cabecera.
@@ -78,6 +88,10 @@ csv.field_size_limit(min(sys.maxsize, 2 ** 31 - 1))
 
 class ImportFailure(Exception):
     """Fallo esperado: su texto se muestra tal cual en el widget."""
+
+
+class DecompressionLimit(ImportFailure):
+    """Lo comprimido de una URL descomprime más de lo razonable."""
 
 
 class ImportCancelled(Exception):
@@ -222,11 +236,31 @@ def _raise_open_error(path, error):
     raise ImportFailure(f"No se puede abrir «{name}»: {error}") from error
 
 
-class _Compressed:
-    """Abre el archivo y descomprime si hace falta, según su contenido."""
+def decompression_limit(compressed_bytes, max_download_mb):
+    """Bytes que pueden salir al descomprimir unos datos descargados."""
+    allowed = max(MIN_DECOMPRESSED, MAX_COMPRESSION_RATIO * compressed_bytes)
+    return min(allowed, DECOMPRESSED_PER_DOWNLOAD * int(max_download_mb) * 1024 * 1024)
 
-    def __init__(self, path):
+
+def _limit_exceeded(limit):
+    megabytes = format_int(limit // (1024 * 1024))
+    return DecompressionLimit(
+        f"Los datos de esta URL ocupan más de {megabytes} MB al descomprimirlos y se ha "
+        "detenido la lectura por seguridad. Si confías en el origen, descarga el archivo "
+        "y ábrelo como archivo local.")
+
+
+class _Compressed:
+    """Abre el archivo y descomprime si hace falta, según su contenido.
+
+    `max_output` limita los bytes descomprimidos reales: un ZIP puede declarar el
+    tamaño que quiera, y aquí no se le cree.
+    """
+
+    def __init__(self, path, max_output=None):
         self.size = 0
+        self.max_output = max_output
+        self.produced = 0
         try:
             self.size = os.path.getsize(path)
             self.raw = open(path, "rb")  # pylint: disable=consider-using-with
@@ -254,10 +288,18 @@ class _Compressed:
                 self.stream = archive.open(members[0])
 
     def read(self, count):
+        limited = self.max_output is not None and self.stream is not self.raw
+        if limited:
+            count = min(count, self.max_output - self.produced + 1)
         try:
-            return self.stream.read(count)
+            data = self.stream.read(count)
         except (OSError, EOFError, lzma.LZMAError, zipfile.BadZipFile) as error:
             raise ImportFailure(f"El archivo comprimido está dañado: {error}") from error
+        if limited:
+            self.produced += len(data)
+            if self.produced > self.max_output:
+                raise _limit_exceeded(self.max_output)
+        return data
 
     def tell(self):
         return self.raw.tell()
@@ -271,9 +313,9 @@ class _Compressed:
                     pass
 
 
-def read_head(path, limit=HEAD_BYTES):
+def read_head(path, limit=HEAD_BYTES, max_output=None):
     """Primeros bytes (ya descomprimidos) y si queda más por leer."""
-    source = _Compressed(path)
+    source = _Compressed(path, max_output)
     try:
         data = source.read(limit + 1)
     finally:
@@ -324,7 +366,7 @@ _EXTENSION_FORMAT = {
 }
 
 
-def detect_format(path, display_name, requested=AUTO):
+def detect_format(path, display_name, requested=AUTO, max_output=None):
     """Devuelve (formato, avisos). El contenido manda sobre la extensión."""
     notes = []
     kind = _sniff_excel_kind(path)
@@ -334,7 +376,7 @@ def detect_format(path, display_name, requested=AUTO):
             "quita la contraseña y guárdalo de nuevo.")
     by_name = _EXTENSION_FORMAT.get(_extension(display_name))
     if kind is None:
-        head, _ = read_head(path, 64 * 1024)
+        head, _ = read_head(path, 64 * 1024, max_output)
         if not head.strip():
             raise ImportFailure(f"El archivo «{os.path.basename(display_name)}» está vacío.")
         if _looks_like_html(head):
@@ -617,9 +659,9 @@ def _head_limit(options):
     return min(HEAD_BYTES + options.skip_rows * 4096, 512 * 1024 * 1024)
 
 
-def analyse_delimited(path, options, fmt):
+def analyse_delimited(path, options, fmt, max_output=None):
     """Mira solo el principio del archivo y deduce cómo leerlo."""
-    head, truncated = read_head(path, _head_limit(options))
+    head, truncated = read_head(path, _head_limit(options), max_output)
     notes = []
     if not head.strip():
         raise ImportFailure("El archivo está vacío.")
@@ -868,7 +910,8 @@ def _parser_failure(error, layout):
     return ImportFailure(f"No se puede interpretar el archivo: {text}")
 
 
-def _read_with_c_engine(path, options, layout, limit, progress, head_only):
+def _read_with_c_engine(path, options, layout, limit, progress, head_only,
+                        max_output=None):
     """Lee las filas de datos con el motor C. Devuelve (frame, contador)."""
     names = [f"c{i}" for i in range(layout.n_columns)]
     dtype = {}
@@ -882,22 +925,23 @@ def _read_with_c_engine(path, options, layout, limit, progress, head_only):
         for cap in (first, 8 * first, 32 * first):
             try:
                 return _parse_block(path, options, layout, limit, progress, names,
-                                    dtype, cap)
+                                    dtype, cap, max_output)
             except _BlockTooSmall:
                 continue
         raise ImportFailure("Hay unas comillas sin cerrar al principio del archivo. "
                             "Corrige el archivo o desactiva las comillas en la "
                             "importación avanzada.")
-    return _parse_block(path, options, layout, limit, progress, names, dtype, None)
+    return _parse_block(path, options, layout, limit, progress, names, dtype, None,
+                        max_output)
 
 
 class _BlockTooSmall(Exception):
     pass
 
 
-def _parse_block(path, options, layout, limit, progress, names, dtype, cap):
+def _parse_block(path, options, layout, limit, progress, names, dtype, cap, max_output):
     head_only = cap is not None
-    source = _Compressed(path)
+    source = _Compressed(path, max_output)
     counter = _FieldCounter(layout.delimiter, layout.quotechar, layout.n_columns,
                             layout.skip_records, layout.comment, limit)
     feed = _Feed(source, layout.encoding, counter, progress, source.size,
@@ -1006,9 +1050,9 @@ def _arff_date_format(java):
     return result
 
 
-def _arff_header(path, encoding_option):
+def _arff_header(path, encoding_option, max_output=None):
     """Devuelve (atributos, desplazamiento de los datos, codificación, avisos)."""
-    source = _Compressed(path)
+    source = _Compressed(path, max_output)
     try:
         chunk = 1024 * 1024
         head = b""
@@ -1088,8 +1132,8 @@ def _arff_attribute(line, number):
                         f"tipo desconocido «{kind}».")
 
 
-def _arff_first_data_line(path, offset, encoding):
-    head, _ = read_head(path, offset + 65536)
+def _arff_first_data_line(path, offset, encoding, max_output=None):
+    head, _ = read_head(path, offset + 65536, max_output)
     text = head[offset:].decode(encoding, "replace")
     for line in text.splitlines():
         stripped = line.strip()
@@ -1098,13 +1142,29 @@ def _arff_first_data_line(path, offset, encoding):
     return ""
 
 
-def _read_arff_sparse(path, offset, encoding, attributes, limit, progress):
-    source = _Compressed(path)
+def _decoded_lines(source, encoding, progress):
+    """Líneas de texto de `source`, pasando siempre por su límite de tamaño."""
+    decoder = codecs.getincrementaldecoder(encoding)("replace")
+    pending = ""
+    while True:
+        progress.check()
+        block = source.read(1024 * 1024)
+        pending += decoder.decode(block, final=not block)
+        lines = pending.split("\n")
+        pending = lines.pop()
+        yield from lines
+        if not block:
+            break
+    if pending:
+        yield pending
+
+
+def _read_arff_sparse(path, offset, encoding, attributes, limit, progress, max_output=None):
+    source = _Compressed(path, max_output)
     try:
         source.read(offset)
-        body = io.TextIOWrapper(source.stream, encoding=encoding, errors="replace")
         rows = []
-        for number, line in enumerate(body, 1):
+        for number, line in enumerate(_decoded_lines(source, encoding, progress), 1):
             line = line.strip()
             if not line or line.startswith("%"):
                 continue
@@ -1118,7 +1178,6 @@ def _read_arff_sparse(path, offset, encoding, attributes, limit, progress):
             if number % CANCEL_EVERY == 0:
                 progress.check()
                 progress.update(30.0 * source.tell() / max(source.size, 1))
-        body.detach()
     finally:
         source.close()
     n_rows = len(rows)
@@ -1156,8 +1215,8 @@ def _read_arff_sparse(path, offset, encoding, attributes, limit, progress):
     return frame, notes
 
 
-def _read_arff(path, options, display_name, limit, progress, head_only):
-    attributes, offset, encoding, notes = _arff_header(path, options.encoding)
+def _read_arff(path, options, display_name, limit, progress, head_only, max_output=None):
+    attributes, offset, encoding, notes = _arff_header(path, options.encoding, max_output)
     names = [attribute["name"] for attribute in attributes]
     declared = {}
     for index, attribute in enumerate(attributes):
@@ -1173,12 +1232,13 @@ def _read_arff(path, options, display_name, limit, progress, head_only):
     if target is not None and attributes[target]["type"] != TEXT:
         declared[target]["role"] = CLASS
 
-    first = _arff_first_data_line(path, offset, encoding)
+    first = _arff_first_data_line(path, offset, encoding, max_output)
     if not first:
         raise ImportFailure("El ARFF no tiene filas en la sección @data.")
     counter = None
     if first.startswith("{"):
-        frame, more = _read_arff_sparse(path, offset, encoding, attributes, limit, progress)
+        frame, more = _read_arff_sparse(path, offset, encoding, attributes, limit, progress,
+                                        max_output)
         notes += more
     else:
         quote = '"' if '"' in first and "'" not in first else "'"
@@ -1187,7 +1247,7 @@ def _read_arff(path, options, display_name, limit, progress, head_only):
                         escapechar="\\", skip_initial_space=True)
         arff_options = Options(na_values="?")
         frame, counter = _read_with_c_engine(path, arff_options, layout, limit,
-                                             progress, head_only)
+                                             progress, head_only, max_output)
         notes += _row_warnings(counter, len(attributes), 0, len(frame))
     if not len(frame):
         raise ImportFailure("El ARFF no tiene filas en la sección @data.")
@@ -1346,7 +1406,20 @@ def _read_xls_rows(path, sheet, limit, progress):
     return rows, names, chosen, len(merged)
 
 
-def _read_excel(path, fmt, options, limit, progress):
+def _check_xlsx_size(path, max_output):
+    """Un XLSX es un ZIP: zipfile no entrega nunca más de lo que declara cada parte."""
+    try:
+        with zipfile.ZipFile(path) as archive:
+            total = sum(item.file_size for item in archive.infolist())
+    except (OSError, zipfile.BadZipFile) as error:
+        raise ImportFailure(f"El libro de Excel está dañado: {error}") from error
+    if total > max_output:
+        raise _limit_exceeded(max_output)
+
+
+def _read_excel(path, fmt, options, limit, progress, max_output=None):
+    if fmt == "xlsx" and max_output is not None:
+        _check_xlsx_size(path, max_output)
     reader = _read_xlsx_rows if fmt == "xlsx" else _read_xls_rows
     # Se pide de más para que la cabecera y las filas saltadas no resten filas.
     want = (limit + options.skip_rows + 16 + max(options.header, 0)) if limit else None
@@ -1578,11 +1651,12 @@ def _structure_notes(names, columns):
 
 # ----------------------------------------------------------------- carga ----
 
-def _load_delimited(path, options, fmt, limit, progress, head_only):
-    layout = analyse_delimited(path, options, fmt)
+def _load_delimited(path, options, fmt, limit, progress, head_only, max_output=None):
+    layout = analyse_delimited(path, options, fmt, max_output)
     automatic_encoding = options.encoding == AUTO
     try:
-        frame, counter = _read_with_c_engine(path, options, layout, limit, progress, head_only)
+        frame, counter = _read_with_c_engine(path, options, layout, limit, progress, head_only,
+                                             max_output)
     except UnicodeDecodeError as error:
         if not automatic_encoding or layout.encoding not in ("utf-8", "utf-8-sig"):
             raise ImportFailure(
@@ -1593,15 +1667,18 @@ def _load_delimited(path, options, fmt, limit, progress, head_only):
         layout.notes.append("El archivo no es UTF-8 de principio a fin: se ha leído "
                             "como Windows-1252. Si ves caracteres raros, elige la "
                             "codificación correcta.")
-        frame, counter = _read_with_c_engine(path, options, layout, limit, progress, head_only)
+        frame, counter = _read_with_c_engine(path, options, layout, limit, progress, head_only,
+                                             max_output)
     return frame, layout, counter
 
 
-def load(path, options, display_name, limit=None, head_only=False, progress=None):
-    """Lee un archivo local. `limit` y `head_only` son para la vista previa."""
+def load(path, options, display_name, limit=None, head_only=False, progress=None,
+         max_output=None):
+    """Lee un archivo. `limit` y `head_only` son para la vista previa; `max_output`,
+    para los datos descargados (ver decompression_limit)."""
     progress = progress or Progress()
     options = Options.from_dict(options.to_dict())
-    fmt, notes = detect_format(path, display_name, options.format)
+    fmt, notes = detect_format(path, display_name, options.format, max_output)
     effective_limit = limit or None
     if options.max_rows:
         effective_limit = min(effective_limit or options.max_rows, options.max_rows)
@@ -1612,7 +1689,7 @@ def load(path, options, display_name, limit=None, head_only=False, progress=None
     try:
         if fmt in DELIMITED:
             frame, layout, counter = _load_delimited(
-                path, options, fmt, effective_limit, progress, head_only)
+                path, options, fmt, effective_limit, progress, head_only, max_output)
             names, declared = layout.names, layout.declared
             notes += layout.notes
             if not head_only:
@@ -1626,13 +1703,13 @@ def load(path, options, display_name, limit=None, head_only=False, progress=None
                              "como meta.")
         elif fmt == "arff":
             frame, names, declared, more, encoding = _read_arff(
-                path, options, display_name, effective_limit, progress, head_only)
+                path, options, display_name, effective_limit, progress, head_only, max_output)
             notes += more
             decimal, thousands, header_row = ".", None, 1
             extra = dict(encoding=encoding)
         else:
             frame, names, declared, more, sheets, sheet, header_row = _read_excel(
-                path, fmt, options, effective_limit, progress)
+                path, fmt, options, effective_limit, progress, max_output)
             notes += more
             decimal, thousands = ".", None
             extra = dict(sheets=sheets, sheet=sheet)
@@ -1915,88 +1992,176 @@ def _download_name(response, final_url):
     return os.path.basename(urllib.parse.urlsplit(final_url).path) or "datos"
 
 
+def _duration_text(seconds):
+    return f"{seconds // 60} minutos" if seconds >= 120 else f"{seconds} s"
+
+
+def _reject_html(content_type, first):
+    if "html" in content_type or _looks_like_html(first):
+        raise ImportFailure("La URL ha devuelto una página web (HTML) en lugar de "
+                            "datos. Comprueba que apunte directamente al archivo.")
+
+
+def _network_failure(error, timeout):
+    """Traduce un error de red al mensaje que verá el usuario."""
+    if isinstance(error, urllib.error.HTTPError):
+        if 300 <= error.code < 400:
+            if "not allowed" in str(error.reason):
+                return ImportFailure("La URL redirige a un destino no permitido.")
+            return ImportFailure(f"La URL redirige demasiadas veces (máximo {MAX_REDIRECTS}).")
+        return ImportFailure(f"El servidor ha respondido con el error {error.code} "
+                             f"({error.reason}).")
+    timed_out = f"El servidor no responde: se ha agotado el tiempo de espera de {timeout} s."
+    if isinstance(error, urllib.error.URLError):
+        if isinstance(error.reason, ImportFailure):
+            return error.reason
+        if isinstance(error.reason, (socket.timeout, TimeoutError)):
+            return ImportFailure(timed_out)
+        return ImportFailure(f"No se puede conectar con el servidor: {error.reason}")
+    if isinstance(error, (socket.timeout, TimeoutError)):
+        return ImportFailure(timed_out)
+    return ImportFailure(f"No se puede descargar la URL: {error}")
+
+
+class _JobStopped(Exception):
+    pass
+
+
+class _DownloadJob(threading.Thread):
+    """Hace la parte bloqueante de la descarga en un hilo aparte.
+
+    Una lectura de red solo vuelve cuando llegan datos o vence el tiempo de espera
+    del socket, y mientras tanto no se puede comprobar nada. Por eso quien vigila la
+    cancelación y el límite total es otro hilo: aunque el servidor gotee o se calle,
+    se atiende en décimas de segundo. Si este hilo sigue bloqueado al cancelar,
+    termina solo al vencer el tiempo de espera y borra su temporal.
+    """
+
+    def __init__(self, url, directory, limit, max_megabytes, timeout):
+        super().__init__(daemon=True)
+        self.url = url
+        self.directory = directory
+        self.limit = limit
+        self.max_megabytes = max_megabytes
+        self.timeout = timeout
+        self.stop_requested = threading.Event()
+        self.result = None
+        self.error = None
+        self.received = 0
+        self.announced = 0
+
+    def run(self):
+        try:
+            self.result = self._fetch()
+        except _JobStopped:
+            pass
+        except ImportFailure as error:
+            self.error = error
+        except (ValueError, OSError, http.client.HTTPException) as error:
+            self.error = _network_failure(error, self.timeout)
+        except Exception as error:  # pylint: disable=broad-except
+            self.error = ImportFailure(f"No se puede descargar la URL: {error}")
+
+    def discard(self):
+        """Borra lo descargado si la descarga ya no interesa."""
+        result, self.result = self.result, None
+        if result is not None:
+            _remove_quietly(result.path)
+
+    def _fetch(self):
+        opener = urllib.request.build_opener(_SafeRedirect)
+        request = urllib.request.Request(
+            self.url, headers={"User-Agent": USER_AGENT, "Accept": "*/*"})
+        target = None
+        try:
+            with opener.open(request, timeout=self.timeout) as response:
+                final_url = response.geturl()
+                name = _download_name(response, final_url)
+                announced = response.headers.get("content-length")
+                self.announced = int(announced) if announced and announced.isdigit() else 0
+                if self.announced > self.limit:
+                    raise ImportFailure(
+                        f"La descarga ocupa {format_int(self.announced // (1024 * 1024))} MB y "
+                        f"el límite es {format_int(self.max_megabytes)} MB. Súbelo en la "
+                        "importación avanzada si es lo que quieres.")
+                content_type = (response.headers.get("content-type") or "").lower()
+                suffix = re.sub(r"[^a-z0-9.]", "", _extension(name) or ".dat")[:12] or ".dat"
+                descriptor, target = tempfile.mkstemp(suffix=suffix, prefix="url-",
+                                                      dir=self.directory)
+                self._copy_body(response, descriptor, content_type)
+                if self.announced and self.received < self.announced:
+                    raise ImportFailure("La descarga se ha cortado antes de terminar. "
+                                        "Vuelve a intentarlo.")
+                if not self.received:
+                    raise ImportFailure("La URL no ha devuelto ningún dato.")
+                notes = []
+                if final_url != self.url:
+                    notes.append(f"La URL redirige a {final_url}.")
+                result = Downloaded(target, name, final_url, self.received, notes)
+                target = None
+                return result
+        finally:
+            if target is not None:
+                _remove_quietly(target)
+
+    def _copy_body(self, response, descriptor, content_type):
+        first = b""
+        checked = False
+        with os.fdopen(descriptor, "wb") as output:
+            while True:
+                if self.stop_requested.is_set():
+                    raise _JobStopped()
+                # read1 devuelve lo que haya en cuanto hay algo; read(n) espera a n.
+                block = response.read1(DOWNLOAD_BLOCK)
+                if not block:
+                    break
+                if not checked:
+                    first += block
+                    if len(first) >= HTML_SNIFF_BYTES:
+                        _reject_html(content_type, first)
+                        checked = True
+                self.received += len(block)
+                if self.received > self.limit:
+                    raise ImportFailure(
+                        f"La descarga supera el límite de {format_int(self.max_megabytes)} MB. "
+                        "Súbelo en la importación avanzada si es lo que quieres.")
+                output.write(block)
+        if not checked:
+            _reject_html(content_type, first)
+
+
+def _remove_quietly(path):
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
 def download(url, directory, max_megabytes=DEFAULT_MAX_DOWNLOAD_MB, progress=None,
              timeout=DOWNLOAD_TIMEOUT, deadline=DOWNLOAD_DEADLINE):
     """Descarga a un temporal, con límites de tiempo y de tamaño."""
     progress = progress or Progress()
     url = rewrite_share_links(normalise_url(url))
     limit = max(int(max_megabytes), 1) * 1024 * 1024
-    opener = urllib.request.build_opener(_SafeRedirect)
-    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "*/*"})
+    job = _DownloadJob(url, directory, limit, max_megabytes, timeout)
     started = time.monotonic()
-    target = None
+    job.start()
     try:
-        with opener.open(request, timeout=timeout) as response:
-            final_url = response.geturl()
-            name = _download_name(response, final_url)
-            announced = response.headers.get("content-length")
-            announced = int(announced) if announced and announced.isdigit() else 0
-            if announced > limit:
-                raise ImportFailure(
-                    f"La descarga ocupa {format_int(announced // (1024 * 1024))} MB y el "
-                    f"límite es {format_int(max_megabytes)} MB. Súbelo en la importación "
-                    "avanzada si es lo que quieres.")
-            content_type = (response.headers.get("content-type") or "").lower()
-            suffix = re.sub(r"[^a-z0-9.]", "", _extension(name) or ".dat")[:12] or ".dat"
-            descriptor, target = tempfile.mkstemp(suffix=suffix, prefix="url-", dir=directory)
-            received = 0
-            first = b""
-            with os.fdopen(descriptor, "wb") as output:
-                while True:
-                    progress.check()
-                    if time.monotonic() - started > deadline:
-                        raise ImportFailure(
-                            f"La descarga ha superado el tiempo máximo de {deadline // 60} minutos.")
-                    block = response.read(DOWNLOAD_BLOCK)
-                    if not block:
-                        break
-                    if not first:
-                        first = block
-                        if "html" in content_type or _looks_like_html(block):
-                            raise ImportFailure(
-                                "La URL ha devuelto una página web (HTML) en lugar de "
-                                "datos. Comprueba que apunte directamente al archivo.")
-                    received += len(block)
-                    if received > limit:
-                        raise ImportFailure(
-                            f"La descarga supera el límite de {format_int(max_megabytes)} MB. "
-                            "Súbelo en la importación avanzada si es lo que quieres.")
-                    output.write(block)
-                    if announced:
-                        progress.update(100.0 * received / announced)
-            if announced and received < announced:
-                raise ImportFailure("La descarga se ha cortado antes de terminar. "
-                                    "Vuelve a intentarlo.")
-            if not received:
-                raise ImportFailure("La URL no ha devuelto ningún dato.")
-            notes = []
-            if final_url != url:
-                notes.append(f"La URL redirige a {final_url}.")
-            result = Downloaded(target, name, final_url, received, notes)
-            target = None
-            return result
-    except urllib.error.HTTPError as error:
-        if 300 <= error.code < 400:
-            if "not allowed" in str(error.reason):
-                raise ImportFailure("La URL redirige a un destino no permitido.") from error
-            raise ImportFailure(f"La URL redirige demasiadas veces (máximo {MAX_REDIRECTS}).") from error
-        raise ImportFailure(f"El servidor ha respondido con el error {error.code} "
-                            f"({error.reason}).") from error
-    except urllib.error.URLError as error:
-        if isinstance(error.reason, ImportFailure):
-            raise error.reason from error
-        if isinstance(error.reason, (socket.timeout, TimeoutError)):
-            raise ImportFailure(f"El servidor no responde: se ha agotado el tiempo de "
-                                f"espera de {timeout} s.") from error
-        raise ImportFailure(f"No se puede conectar con el servidor: {error.reason}") from error
-    except (socket.timeout, TimeoutError) as error:
-        raise ImportFailure(f"El servidor no responde: se ha agotado el tiempo de espera "
-                            f"de {timeout} s.") from error
-    except (ValueError, OSError, http.client.HTTPException) as error:
-        raise ImportFailure(f"No se puede descargar la URL: {error}") from error
-    finally:
-        if target is not None:
-            try:
-                os.remove(target)
-            except OSError:
-                pass
+        while True:
+            job.join(DOWNLOAD_POLL)
+            if not job.is_alive():
+                break
+            progress.check()
+            if time.monotonic() - started > deadline:
+                raise ImportFailure("La descarga ha superado el tiempo máximo de "
+                                    f"{_duration_text(deadline)}.")
+            if job.announced:
+                progress.update(100.0 * job.received / job.announced)
+    except BaseException:
+        job.stop_requested.set()
+        job.join(DOWNLOAD_STOP_WAIT)  # normalmente basta para que borre su temporal
+        job.discard()
+        raise
+    if job.error is not None:
+        raise job.error
+    return job.result

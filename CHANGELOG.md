@@ -3,6 +3,15 @@
 Cada versión se publica a la vez en GitHub (release `vX.Y.Z`) y en
 [PyPI](https://pypi.org/project/orange-gualbe-toolbox/).
 
+## 0.2.1 (2026-11-09)
+
+- Corregido en **File Import**: el límite de tiempo y la cancelación de una descarga
+  no se atendían hasta que llegaba un bloque completo, y un servidor lento podía
+  hacerlos esperar mucho. Ahora responden en menos de un segundo.
+- Corregido en **File Import**: los datos comprimidos descargados de una URL ya no
+  pueden ocupar una cantidad desmesurada al descomprimirse (bombas de compresión).
+  Los archivos locales no tienen este límite.
+
 ## 0.2.0 (2026-11-09)
 
 - Widget **File Import**: importa datos desde un archivo o una URL (CSV, TSV, TAB,

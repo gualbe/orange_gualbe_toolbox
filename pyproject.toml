@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "orange_gualbe_toolbox"
-version = "0.2.0"
+version = "0.2.1"
 description = "Utilidades visuales de ciencia de datos para Orange Data Mining."
 readme = "README.md"
 requires-python = ">=3.9"

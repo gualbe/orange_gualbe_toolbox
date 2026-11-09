@@ -7,9 +7,11 @@ la descarga desde un servidor HTTP local.
 import bz2
 import gzip
 import http.server
+import io
 import lzma
 import os
 import shutil
+import struct
 import sys
 import tempfile
 import threading
@@ -730,6 +732,47 @@ check(Options_vacias.format == engine.AUTO and Options_vacias.skip_rows == 0, "a
 CSV_URL = TEXTO_COMA.encode()
 XLSX_URL = open(ruta("base.xlsx"), "rb").read()
 GRANDE_URL = b"a,b\n" + b"1,2\n" * 2000000
+CUERPO_BOMBA = b"1,2\n" * (10 * 1024 * 1024)  # 40 MB que comprimen a unos pocos KB
+
+
+def comprimir_zip(cuerpo, miembros=1, metodo=zipfile.ZIP_DEFLATED):
+    memoria = io.BytesIO()
+    with zipfile.ZipFile(memoria, "w", metodo) as z:
+        for numero in range(miembros):
+            z.writestr(f"datos{numero}.csv", cuerpo)
+    return memoria.getvalue()
+
+
+def declarar_tamano(datos, tamano):
+    """Falsea el tamaño descomprimido que declara el directorio central del ZIP."""
+    posicion = datos.index(b"PK\x01\x02")
+    return datos[:posicion + 24] + struct.pack("<I", tamano) + datos[posicion + 28:]
+
+
+def xlsx_bomba():
+    memoria = io.BytesIO()
+    with zipfile.ZipFile(memoria, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("xl/workbook.xml", "<workbook/>")
+        z.writestr("xl/worksheets/sheet1.xml", b" " * (40 * 1024 * 1024))
+    return memoria.getvalue()
+
+
+BOMBAS = {
+    "b.csv.gz": gzip.compress(CUERPO_BOMBA),
+    "b.csv.bz2": bz2.compress(CUERPO_BOMBA),
+    "b.csv.xz": lzma.compress(CUERPO_BOMBA, preset=1),
+    "b.csv.zip": comprimir_zip(CUERPO_BOMBA),
+    "b.xlsx": xlsx_bomba(),
+}
+LEGITIMOS = {
+    "l.csv.gz": gzip.compress(CSV_URL),
+    "l.csv.bz2": bz2.compress(CSV_URL),
+    "l.csv.xz": lzma.compress(CSV_URL),
+    "l.csv.zip": comprimir_zip(CSV_URL),
+    "dos.zip": comprimir_zip(CSV_URL, miembros=2),
+    "corto.csv.zip": declarar_tamano(comprimir_zip(CSV_URL), 10),
+    "largo.csv.zip": declarar_tamano(comprimir_zip(CSV_URL), 2 ** 31),
+}
 
 
 class Manejador(http.server.BaseHTTPRequestHandler):
@@ -792,6 +835,38 @@ class Manejador(http.server.BaseHTTPRequestHandler):
             self.wfile.write(b"a,b\n1,2\n")
         elif ruta_url == "/vacia":
             self.enviar(b"")
+        elif ruta_url.startswith("/bomba/"):
+            self.enviar(BOMBAS[ruta_url[7:]], "application/octet-stream")
+        elif ruta_url.startswith("/legit/"):
+            self.enviar(LEGITIMOS[ruta_url[7:]], "application/octet-stream")
+        elif ruta_url == "/goteo":
+            self.send_response(200)
+            self.send_header("Content-Length", "45")
+            self.end_headers()
+            for _ in range(45):
+                self.wfile.write(b"x")
+                self.wfile.flush()
+                time.sleep(0.2)
+        elif ruta_url == "/goteo_html":
+            cuerpo = b"<html><body>hola</body></html>"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(len(cuerpo)))
+            self.end_headers()
+            for posicion in range(len(cuerpo)):
+                self.wfile.write(cuerpo[posicion:posicion + 1])
+                self.wfile.flush()
+                time.sleep(0.01)
+        elif ruta_url == "/mudo":
+            self.send_response(200)
+            self.send_header("Content-Length", "1000")
+            self.end_headers()
+            self.wfile.write(b"a,b\n1")
+            self.wfile.flush()
+            time.sleep(8)
+        elif ruta_url == "/sin_cabeceras":
+            time.sleep(8)
+            self.enviar(CSV_URL)
         else:
             self.send_error(404)
 
@@ -842,6 +917,103 @@ for destino in ("/enorme", "/sin_longitud"):
     check(error_tamano and "límite" in error_tamano, f"URL {destino}: límite de tamaño ({error_tamano})")
 restos = [n for n in os.listdir(DIR) if n.startswith("url-")]
 check(not restos, f"las descargas fallidas no dejan temporales: {restos}")
+
+# Descargas lentas: el límite total y la cancelación no dependen de que llegue un bloque.
+def cronometrar(url, directorio=None, **opciones):
+    inicio = time.perf_counter()
+    error = None
+    try:
+        engine.download(url, directorio or DIR, **opciones)
+    except (engine.ImportFailure, engine.ImportCancelled) as excepcion:
+        error = excepcion
+    return time.perf_counter() - inicio, error
+
+
+duracion, error = cronometrar(BASE + "/goteo", deadline=2)
+check(isinstance(error, engine.ImportFailure) and "tiempo máximo de 2 s" in str(error),
+      f"goteo: salta el límite total ({error})")
+check(1.8 <= duracion < 3, f"goteo: límite total a los {duracion:.2f} s")
+
+
+def cancelar_a(segundos):
+    inicio = time.perf_counter()
+    return engine.Progress(is_cancelled=lambda: time.perf_counter() - inicio > segundos)
+
+
+for ruta_lenta in ("/goteo", "/mudo", "/sin_cabeceras"):
+    carpeta_lenta = tempfile.mkdtemp(dir=DIR)
+    duracion, error = cronometrar(BASE + ruta_lenta, carpeta_lenta, progress=cancelar_a(1))
+    check(isinstance(error, engine.ImportCancelled), f"{ruta_lenta}: se cancela ({error!r})")
+    check(duracion < 2, f"{ruta_lenta}: cancelada a 1 s y atendida a {duracion:.2f} s")
+duracion, error = cronometrar(BASE + "/goteo_html")
+check(isinstance(error, engine.ImportFailure) and "HTML" in str(error),
+      f"HTML que llega byte a byte: se detecta ({error})")
+
+banco.salida = "sin enviar"
+banco.w.open_url(BASE + "/goteo")
+inicio = time.time()
+while time.time() - inicio < 1:
+    app.processEvents()
+    time.sleep(0.005)
+check(banco.w.task is not None, "goteo en el widget: sigue descargando")
+inicio = time.perf_counter()
+banco.w.cancel_import()
+check(banco.w.task is None and time.perf_counter() - inicio < 1, "goteo en el widget: cancelar es inmediato")
+check(banco.salida == "sin enviar", "goteo en el widget: no llega resultado")
+
+# Bombas de compresión: se cortan con su mensaje y sin dejar temporales.
+check(engine.decompression_limit(40 * 1024, 500) == 16 * 1024 * 1024, "límite: mínimo para archivos pequeños")
+check(engine.decompression_limit(10 * 1024 * 1024, 500) == 1000 * 1024 * 1024, "límite: 100 veces lo descargado")
+check(engine.decompression_limit(400 * 1024 * 1024, 500) == 5000 * 1024 * 1024, "límite: 10 veces la descarga máxima")
+check(engine.decompression_limit(40 * 1024, 1) == 10 * 1024 * 1024, "límite: respeta una descarga máxima pequeña")
+for nombre in BOMBAS:
+    falla(banco.url(f"{BASE}/bomba/{nombre}"), f"bomba {nombre}", "descomprimirlos", "archivo local")
+    check(banco.w._download is None, f"bomba {nombre}: olvida la descarga")
+    check(not os.listdir(banco.w._temp_dir), f"bomba {nombre}: sin temporales {os.listdir(banco.w._temp_dir)}")
+
+for nombre in ("b.csv.gz", "b.csv.bz2", "b.csv.xz", "b.csv.zip"):
+    path = escribir(nombre, BOMBAS[nombre])
+    limite = engine.decompression_limit(len(BOMBAS[nombre]), 500)
+    for texto, kwargs in (("vista previa", dict(limit=engine.INFERENCE_ROWS, head_only=True, max_output=1000)),
+                          ("carga completa", dict(max_output=limite))):
+        cortada = False
+        try:
+            engine.load(path, engine.Options(), nombre, **kwargs)
+        except engine.DecompressionLimit:
+            cortada = True
+        check(cortada, f"bomba {nombre}: se corta en la {texto}")
+
+cabecera_arff = "@relation b\n@attribute a numeric\n@attribute b numeric\n@data\n"
+for etiqueta, fila in (("densa", "1,2\n"), ("dispersa", "{0 1,1 2}\n")):
+    comprimido = gzip.compress(cabecera_arff.encode() + fila.encode() * 400000)
+    path = escribir(f"bomba_{etiqueta}.arff.gz", comprimido)
+    cortada = False
+    try:
+        engine.load(path, engine.Options(), f"bomba_{etiqueta}.arff.gz", max_output=100000)
+    except engine.DecompressionLimit:
+        cortada = True
+    check(cortada, f"bomba ARFF {etiqueta}: se corta")
+    t2 = engine.load(path, engine.Options(), f"bomba_{etiqueta}.arff.gz")
+    check(t2.n_rows == 400000, f"ARFF {etiqueta} local: no se limita")
+
+# Lo legítimo sigue funcionando, por URL y en local.
+for nombre in ("l.csv.gz", "l.csv.bz2", "l.csv.xz", "l.csv.zip"):
+    comprobar_base(banco.url(f"{BASE}/legit/{nombre}"), f"legítimo por URL {nombre}")
+    comprobar_base(banco.abrir(escribir(nombre, LEGITIMOS[nombre])), f"legítimo local {nombre}")
+falla(banco.url(f"{BASE}/legit/dos.zip"), "ZIP con varios miembros por URL", "exactamente un archivo")
+falla(banco.url(f"{BASE}/legit/corto.csv.zip"), "ZIP que declara menos de lo que tiene", "dañado")
+comprobar_base(banco.url(f"{BASE}/legit/largo.csv.zip"), "ZIP que declara más de lo que tiene")
+
+local = escribir("grande_local.csv.gz", gzip.compress(CUERPO_BOMBA[:20 * 1024 * 1024]))
+t = banco.abrir(local)
+correcto(t, "un archivo local muy comprimido no se limita", 5 * 1024 * 1024)
+cancelado = False
+try:
+    engine.load(local, engine.Options(), "grande_local.csv.gz",
+                progress=engine.Progress(is_cancelled=lambda: True))
+except engine.ImportCancelled:
+    cancelado = True
+check(cancelado, "un archivo local comprimido se puede cancelar")
 
 # Arrastrar y soltar
 from AnyQt.QtCore import QUrl  # noqa: E402

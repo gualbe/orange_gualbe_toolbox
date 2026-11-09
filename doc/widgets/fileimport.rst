@@ -121,7 +121,8 @@ Está plegada para no estorbar. Cada opción muestra entre paréntesis lo detect
      - Para fechas ambiguas. En automático gana el formato que mejor encaja y, si
        empatan, día/mes/año.
    * - **Descarga máxima**
-     - Tamaño máximo que se descargará desde una URL. Por defecto, 500 MB.
+     - Tamaño máximo que se descargará desde una URL. Por defecto, 500 MB. También
+       fija el máximo de lo descomprimido (ver abajo).
 
 Vista previa y carga
 --------------------
@@ -159,10 +160,28 @@ Lo que ocurre cuando hay problemas
      - Mensaje con la fila donde empiezan. Se puede desactivar el uso de comillas.
    * - Archivo vacío, inexistente, sin permisos o dañado; Excel con contraseña
      - Mensaje claro y sin salida.
-   * - URL con error, redirección excesiva, tiempo agotado, demasiado grande o que
-       devuelve una página web
+   * - URL con error, redirección excesiva, tiempo agotado, demasiado grande, que
+       descomprime demasiado o que devuelve una página web
      - Mensaje claro y sin salida. Solo se admiten http y https, también en las
        redirecciones.
+
+Datos comprimidos desde una URL
+-------------------------------
+
+Un archivo comprimido muy pequeño puede ocupar muchísimo al descomprimirse y agotar
+la memoria (es lo que se conoce como *bomba de compresión*). Por eso los datos
+comprimidos que vienen de una URL (gzip, bzip2, xz, ZIP y también los XLSX, que son
+ZIP por dentro) se dejan de leer si superan el **menor** de estos dos valores:
+
+- **100 veces lo descargado**, con un mínimo de 16 MB. Un CSV real rara vez comprime
+  más de 30 veces.
+- **10 veces la descarga máxima**: 5 GB con el valor por defecto.
+
+Si un archivo legítimo lo supera, descárgalo y ábrelo como archivo local: los
+archivos locales no tienen este límite, y su lectura se puede cancelar igualmente.
+
+Un ZIP debe contener un solo archivo. El límite mide lo que realmente sale al
+descomprimir, no el tamaño que el ZIP declara.
 
 Guardado con el workflow
 ------------------------

@@ -121,17 +121,45 @@ def _resolve(request, progress):
     return download, download.path, download.display_name
 
 
+def _remove_file(path):
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def _output_limit(download, options):
+    """Los archivos locales son del usuario: solo se limita lo descargado."""
+    if download is None:
+        return None
+    return engine.decompression_limit(download.size, options.max_download_mb)
+
+
 def _signature(path, options):
     stat = os.stat(path)
     return (path, stat.st_mtime_ns, stat.st_size, tuple(sorted(options.to_dict().items())))
+
+
+def _read(request, download, path, name, progress, **kwargs):
+    """Lee lo resuelto sin perder la pista de un temporal recién descargado."""
+    try:
+        return engine.load(path, request.options, name, progress=progress,
+                           max_output=_output_limit(download, request.options), **kwargs)
+    except ImportCancelled:
+        if download is not None and download is not request.download:
+            _remove_file(download.path)
+        raise
+    except ImportFailure as failure:
+        failure.download = download
+        raise
 
 
 def task_preview(request, overrides, state):
     progress = _progress(state)
     download, path, name = _resolve(request, progress)
     progress.say("Leyendo la vista previa…")
-    loaded = engine.load(path, request.options, name, limit=engine.INFERENCE_ROWS,
-                         head_only=True, progress=progress)
+    loaded = _read(request, download, path, name, progress,
+                   limit=engine.INFERENCE_ROWS, head_only=True)
     cells = engine.preview_columns(loaded, apply_overrides(loaded.columns, overrides))
     return PreviewResult(download, path, name, loaded, cells)
 
@@ -141,10 +169,14 @@ def task_load(request, overrides, state):
     download, path, name = _resolve(request, progress)
     progress.say("Leyendo el archivo…")
     signature = _signature(path, request.options)
-    loaded = engine.load(path, request.options, name, progress=progress)
+    loaded = _read(request, download, path, name, progress)
     progress.say("Creando la tabla…")
     choices = apply_overrides(loaded.columns, overrides)
-    table, notes = engine.frame_to_table(loaded, choices, progress)
+    try:
+        table, notes = engine.frame_to_table(loaded, choices, progress)
+    except ImportFailure as failure:
+        failure.download = download
+        raise
     cells = engine.preview_columns(loaded, choices)
     return LoadResult(download, path, name, loaded, table, notes, signature, cells)
 
@@ -912,9 +944,14 @@ class OWFileImport(OWUrlDropBase, RecentPathsWComboMixin, ConcurrentWidgetMixin)
         self._sync_source_controls()
         self._source_changed()
 
+    def _forget_download(self):
+        download, self._download = self._download, None
+        if download is not None:
+            _remove_file(download.path)
+
     def _source_changed(self):
         self.cancel_import(quiet=True)
-        self._download = None
+        self._forget_download()
         self._loaded = self._loaded_signature = None
         self._load_config_into_controls()
         self._refresh_preview()
@@ -963,7 +1000,8 @@ class OWFileImport(OWUrlDropBase, RecentPathsWComboMixin, ConcurrentWidgetMixin)
 
     def reload_source(self):
         self._debounce.stop()
-        self._download = None
+        self.cancel_import(quiet=True)
+        self._forget_download()
         self._loaded = self._loaded_signature = None
         self._refresh_preview()
 
@@ -1275,6 +1313,9 @@ class OWFileImport(OWUrlDropBase, RecentPathsWComboMixin, ConcurrentWidgetMixin)
             return
         if isinstance(ex, ImportFailure):
             self.Error.failed(str(ex))
+            self._download = getattr(ex, "download", self._download)
+            if isinstance(ex, engine.DecompressionLimit):
+                self._forget_download()
         else:
             self.Error.unexpected(f"{type(ex).__name__}: {ex}")
         if self._running == "preview":
