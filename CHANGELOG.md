@@ -3,6 +3,14 @@
 Cada versión se publica a la vez en GitHub (release `vX.Y.Z`) y en
 [PyPI](https://pypi.org/project/orange-gualbe-toolbox/).
 
+## 0.3.4 (2026-11-09)
+
+- Corregido en **Test & Score Pro**: una diferencia constante entre modelos ya no se confunde con
+  evidencia cuando las particiones tienen valores de escala muy distinta o algún cero.
+- Corregido: el ruido de redondeo de una partición enorme ya no pesa en el t ni en el bayesiano.
+- Corregido: cuando la métrica vale casi cero (un ajuste perfecto), las diferencias que son solo
+  ruido numérico ya no aparecen como significativas.
+
 ## 0.3.3 (2026-11-09)
 
 - Corregido en **Test & Score Pro**: exportar el informe fallaba con modelos que sirven para

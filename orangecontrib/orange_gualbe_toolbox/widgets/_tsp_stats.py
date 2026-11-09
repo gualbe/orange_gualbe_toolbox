@@ -20,6 +20,9 @@ MIN_FRIEDMAN_BLOCKS = 10
 # 14/15 - 13/15 no da exactamente lo mismo que 13/15 - 12/15. Siempre se aplica valor a
 # valor: una escala global haría que un solo valor enorme borrase las diferencias del resto.
 RELATIVE_TOLERANCE = 1e-13
+# Para declarar empates en los rangos se exige más: una diferencia constante necesita margen
+# para el ruido, pero un empate falso cambia el valor p. El redondeo real queda muy por debajo.
+TIE_FACTOR = 0.1
 
 TTEST_CORRECTED = "corrected_t"
 TTEST_PAIRED = "paired_t"
@@ -104,25 +107,60 @@ def paired_values(a, b):
     return a[keep], b[keep], int((~keep).sum())
 
 
-def clean_differences(a, b):
+def _tolerances(values, others=None, floor=0.0):
+    """Error de redondeo admisible de cada valor: el suyo propio, con un suelo opcional."""
+    scale = np.abs(values) if others is None else np.maximum(np.abs(values), np.abs(others))
+    return np.maximum(RELATIVE_TOLERANCE * scale, floor)
+
+
+def _shared_range(values, tolerances):
+    """Parte común de los intervalos valor ± tolerancia; vacía si inferior > superior."""
+    return float(np.max(values - tolerances)), float(np.min(values + tolerances))
+
+
+def _group_starts(ordered, tolerances):
+    """Marca dónde empieza cada grupo de valores ordenados indistinguibles entre sí.
+
+    Un grupo son valores cuyos intervalos tienen un punto común: cada uno lleva su propio
+    error de redondeo y uno grande no se come a los demás.
+    """
+    lower, upper = ordered - tolerances, ordered + tolerances
+    starts = np.r_[True, lower[1:] > upper[:-1]]
+    highest_lower = smallest_upper = 0.0
+    for position in np.flatnonzero(~starts):
+        if starts[position - 1]:
+            highest_lower, smallest_upper = lower[position - 1], upper[position - 1]
+        highest_lower = max(highest_lower, lower[position])
+        smallest_upper = min(smallest_upper, upper[position])
+        if highest_lower > smallest_upper:
+            starts[position] = True
+    return starts
+
+
+def clean_differences(a, b, floor=0.0):
     """Diferencias sin ruido de coma flotante.
 
-    Son cero las que no superan el redondeo de sus propios valores, y las de valor absoluto
-    casi igual pasan a ser exactamente iguales, para que los rangos las traten como empates.
-    Se agrupa por cercanía y no con una rejilla, que crearía empates donde no los hay.
+    Si todas las diferencias caben en un mismo valor, la diferencia es constante. Si no, son
+    cero las que no superan el redondeo de sus propios valores, y las de magnitud
+    indistinguible pasan a ser exactamente iguales, para que los rangos las traten como
+    empates. `floor` es el suelo absoluto del error, en unidades de la métrica.
     """
     a, b = np.asarray(a, dtype=float), np.asarray(b, dtype=float)
     differences = a - b
-    tolerances = RELATIVE_TOLERANCE * np.maximum(np.abs(a), np.abs(b))
+    if not len(differences):
+        return differences
+    tolerances = _tolerances(a, b, floor)
+    low, high = _shared_range(differences, tolerances)
+    if low <= high:
+        return np.full(len(differences), 0.0 if low <= 0 <= high else (low + high) / 2)
     differences[np.abs(differences) <= tolerances] = 0.0
     nonzero = np.flatnonzero(differences)
     if len(nonzero) < 2:
         return differences
     magnitudes = np.abs(differences[nonzero])
     order = np.argsort(magnitudes, kind="stable")
-    ordered, allowed = magnitudes[order], tolerances[nonzero][order]
-    # Un empate exige estar dentro del redondeo de los dos valores: gana la tolerancia menor.
-    starts = np.r_[True, np.diff(ordered) > np.minimum(allowed[:-1], allowed[1:])]
+    ordered = magnitudes[order]
+    starts = _group_starts(ordered, TIE_FACTOR * tolerances[nonzero][order])
     representative = ordered[np.flatnonzero(starts)][np.cumsum(starts) - 1]
     merged = magnitudes.copy()
     merged[order] = representative
@@ -130,16 +168,18 @@ def clean_differences(a, b):
     return differences
 
 
-def _nearly_constant(values):
-    return bool(np.ptp(values) <= RELATIVE_TOLERANCE * np.max(np.abs(values)))
+def _nearly_constant(values, floor=0.0):
+    low, high = _shared_range(values, _tolerances(values, floor=floor))
+    return low <= high
 
 
-def _rank_block(values):
-    """Rangos de un bloque (1 el mejor); los valores casi iguales empatan."""
-    order = np.argsort(-values, kind="stable")
-    ordered = values[order]
-    limits = RELATIVE_TOLERANCE * np.maximum(np.abs(ordered[:-1]), np.abs(ordered[1:]))
-    groups = np.r_[0, np.cumsum(np.abs(np.diff(ordered)) > limits)]
+def _rank_block(values, floor=0.0):
+    """Rangos de un bloque (1 el mejor); los valores indistinguibles empatan."""
+    order = np.argsort(values, kind="stable")[::-1]
+    ordered = values[order][::-1]  # de menor a mayor, como espera _group_starts
+    starts = _group_starts(ordered, TIE_FACTOR * _tolerances(ordered, floor=floor))[::-1]
+    # Al recorrer de mayor a menor, un grupo acaba donde el orden ascendente lo empezó.
+    groups = np.r_[0, np.cumsum(starts[:-1])]
     ranks = np.empty(len(values))
     ranks[order] = stats.rankdata(groups)
     return ranks
@@ -182,7 +222,7 @@ def hedges_g(differences):
     return float(np.mean(differences) / deviation * (1 - 3 / (4 * (n - 1) - 1)))
 
 
-def _t_family(a, b, ratio, test, assumption, alpha):
+def _t_family(a, b, ratio, test, assumption, alpha, floor=0.0):
     """Base común del t emparejado: `ratio=0` es el t clásico."""
     a, b, removed = paired_values(a, b)
     result = PairTest(test, n=len(a), assumption=assumption,
@@ -191,12 +231,10 @@ def _t_family(a, b, ratio, test, assumption, alpha):
     if n < 2:
         result.warnings.append("Hacen falta al menos 2 particiones comparables.")
         return result
-    differences = a - b
-    cleaned = clean_differences(a, b)
-    if np.ptp(cleaned) == 0:
-        differences = cleaned
+    # Siempre la diferencia limpia: el ruido de una partición enorme no debe pesar.
+    differences = clean_differences(a, b, floor)
     mean = float(np.mean(differences))
-    variance = float(np.var(differences, ddof=1)) if np.ptp(cleaned) else 0.0
+    variance = float(np.var(differences, ddof=1)) if np.ptp(differences) else 0.0
     result.mean_diff = mean
     result.direction = int(np.sign(mean))
     if variance == 0:
@@ -205,7 +243,7 @@ def _t_family(a, b, ratio, test, assumption, alpha):
             result.ci_low = result.ci_high = 0.0
             result.decision = SAME
             result.warnings.append("Los dos modelos dan puntuaciones idénticas en todas "
-                                   "las particiones.")
+                                   "las particiones, dentro de la precisión numérica.")
         else:
             result.ci_low = result.ci_high = mean
             result.warnings.append("Varianza nula: la diferencia es constante en todas "
@@ -226,7 +264,7 @@ def _t_family(a, b, ratio, test, assumption, alpha):
     return result
 
 
-def corrected_ttest(a, b, test_train_ratio, alpha=ALPHA_DEFAULT):
+def corrected_ttest(a, b, test_train_ratio, alpha=ALPHA_DEFAULT, floor=0.0):
     """t remuestreado corregido de Nadeau y Bengio (2003).
 
     Sustituye la varianza del t clásico, s²/J, por s²·(1/J + n_test/n_train) para tener
@@ -235,15 +273,15 @@ def corrected_ttest(a, b, test_train_ratio, alpha=ALPHA_DEFAULT):
     return _t_family(
         a, b, test_train_ratio, TTEST_CORRECTED,
         "Particiones dependientes con la corrección de Nadeau-Bengio de la varianza; "
-        "diferencias aproximadamente normales.", alpha)
+        "diferencias aproximadamente normales.", alpha, floor)
 
 
-def paired_ttest(a, b, alpha=ALPHA_DEFAULT):
+def paired_ttest(a, b, alpha=ALPHA_DEFAULT, floor=0.0):
     """t clásico. Con particiones de validación cruzada da demasiados positivos."""
     result = _t_family(
         a, b, 0.0, TTEST_PAIRED,
         "Observaciones independientes, que las particiones no cumplen; solo como referencia.",
-        alpha)
+        alpha, floor)
     result.warnings.append("Sin corregir: las particiones no son independientes y este "
                            "test da demasiados falsos positivos. Usa el t corregido.")
     return result
@@ -266,7 +304,7 @@ def signed_ranks(differences, zero_method="wilcox"):
     return positive, negative
 
 
-def wilcoxon_test(a, b, test=WILCOXON, assumption=None, alpha=ALPHA_DEFAULT):
+def wilcoxon_test(a, b, test=WILCOXON, assumption=None, alpha=ALPHA_DEFAULT, floor=0.0):
     a, b, removed = paired_values(a, b)
     result = PairTest(test, n=len(a), warnings=_undefined_warning(removed), assumption=(
         assumption or "Diferencias simétricas e independientes; las particiones de una "
@@ -274,7 +312,7 @@ def wilcoxon_test(a, b, test=WILCOXON, assumption=None, alpha=ALPHA_DEFAULT):
     if not len(a):
         result.warnings.append("No hay particiones comparables.")
         return result
-    differences = clean_differences(a, b)
+    differences = clean_differences(a, b, floor)
     result.mean_diff = float(np.mean(differences))
     nonzero = differences[differences != 0]
     n_zero = len(differences) - len(nonzero)
@@ -346,7 +384,7 @@ def mcnemar_test(correct_a, correct_b, assumption=None, alpha=ALPHA_DEFAULT):
     return result
 
 
-def bayes_correlated(a, b, rope, rho):
+def bayes_correlated(a, b, rope, rho, floor=0.0):
     """t bayesiano correlacionado (Corani y Benavoli, 2015).
 
     En validación cruzada de k particiones ρ = 1/k y el cálculo lo hace baycomp. Con otro
@@ -360,9 +398,8 @@ def bayes_correlated(a, b, rope, rho):
     if n < 2:
         result.warnings.append("Hacen falta al menos 2 particiones comparables.")
         return result
-    cleaned = clean_differences(a, b)
-    degenerate = np.ptp(cleaned) == 0
-    differences = cleaned if degenerate else a - b
+    differences = clean_differences(a, b, floor)
+    degenerate = np.ptp(differences) == 0
     result.mean_diff = float(np.mean(differences))
     variance = 0.0 if degenerate else float(np.var(differences, ddof=1))
     result.direction = int(np.sign(result.mean_diff))
@@ -370,7 +407,7 @@ def bayes_correlated(a, b, rope, rho):
         result.warnings.append("Varianza nula: la posterior es un punto.")
     if not degenerate and abs(rho - 1 / n) < 1e-9:
         import baycomp  # lazy: tarda en importarse y Orange carga todos los widgets al arrancar
-        probabilities = baycomp.two_on_single(a, b, rope=rope)
+        probabilities = baycomp.two_on_single(differences, np.zeros(n), rope=rope)
         if rope > 0:
             p_a, p_rope, p_b = probabilities
         else:
@@ -446,7 +483,7 @@ def decide_frequentist(result, alpha):
     return result
 
 
-def rank_blocks(scores):
+def rank_blocks(scores, floor=0.0):
     """Rangos por bloque (1 es el mejor) con empates promediados.
 
     `scores` tiene forma (modelos, bloques). Solo se usan bloques sin valores perdidos.
@@ -456,7 +493,8 @@ def rank_blocks(scores):
     blocks = scores[:, complete]
     if not blocks.size:
         return blocks, int((~complete).sum())
-    return np.column_stack([_rank_block(column) for column in blocks.T]), int((~complete).sum())
+    return (np.column_stack([_rank_block(column, floor) for column in blocks.T]),
+            int((~complete).sum()))
 
 
 def friedman_from_mean_ranks(mean_ranks, n):
@@ -492,9 +530,9 @@ FRIEDMAN_ON_FOLDS = (
     "úsalos como descripción, no como prueba de generalización.")
 
 
-def friedman_test(scores, alpha=ALPHA_DEFAULT, on_folds=True):
+def friedman_test(scores, alpha=ALPHA_DEFAULT, on_folds=True, floor=0.0):
     """Friedman con la corrección por empates (la de scipy) e Iman-Davenport."""
-    ranks, removed = rank_blocks(scores)
+    ranks, removed = rank_blocks(scores, floor)
     k, n = ranks.shape
     result = FriedmanResult(n_models=k, n_blocks=n, mean_ranks=ranks.mean(axis=1) if n else
                             np.full(k, np.nan), assumption=(
@@ -574,7 +612,7 @@ def holm_pairs(mean_ranks, n, on_folds=True):
     return out
 
 
-def corrected_interval(values, test_train_ratio, alpha=ALPHA_DEFAULT):
+def corrected_interval(values, test_train_ratio, alpha=ALPHA_DEFAULT, floor=0.0):
     """Intervalo de confianza de la media por particiones, con Nadeau-Bengio."""
     values = np.asarray(values, dtype=float)
     values = values[np.isfinite(values)]
@@ -582,7 +620,7 @@ def corrected_interval(values, test_train_ratio, alpha=ALPHA_DEFAULT):
     if n < 2:
         return np.nan, np.nan
     mean = float(np.mean(values))
-    if _nearly_constant(values):
+    if _nearly_constant(values, floor):
         return mean, mean
     scale = np.sqrt(np.var(values, ddof=1) * (1 / n + test_train_ratio))
     half = stats.t.ppf(1 - alpha / 2, n - 1) * scale

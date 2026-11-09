@@ -28,7 +28,7 @@ from Orange.classification import (
     LogisticRegressionLearner, MajorityLearner, NaiveBayesLearner, RandomForestLearner, TreeLearner,
 )
 from Orange.data import ContinuousVariable, DiscreteVariable, Domain, Table
-from Orange.regression import LinearRegressionLearner, MeanLearner, TreeLearner as TreeRegression
+from Orange.regression import LinearRegressionLearner, MeanLearner, RidgeRegressionLearner, TreeLearner as TreeRegression
 from Orange.widgets.evaluate.owconfusionmatrix import OWConfusionMatrix
 from Orange.widgets.evaluate.owrocanalysis import OWROCAnalysis
 from Orange.widgets.evaluate.owtestandscore import OWTestAndScore
@@ -245,6 +245,76 @@ for escala in (1e6, 1e-6):
     uno, dos = st.corrected_ttest(x, y, 1 / 9), st.corrected_ttest(x * escala, y * escala, 1 / 9)
     check(cerca(uno.statistic, dos.statistic, 1e-6) and cerca(st.wilcoxon_test(x, y).p_value, st.wilcoxon_test(x * escala, y * escala).p_value),
           f"la escala {escala} no cambia el resultado")
+
+# Diferencia constante con un cero o con escalas muy distintas.
+cnt = np.array([1, 954, 256, 563, 146, 241, 978, 730, 74, 188])
+r = st.corrected_ttest(cnt / 1000, (cnt - 1) / 1000, 1 / 9)
+check(np.isnan(r.p_value) and r.decision == st.NOT_AVAILABLE, f"constante con un cero: no evaluable ({r.p_value})")
+barrido = np.random.RandomState(11)
+escapes = 0
+for _ in range(2000):
+    c = barrido.randint(1, 1000, 10)
+    c[0] = 1
+    escapes += np.isfinite(st.corrected_ttest(c / 1000, (c - 1) / 1000, 1 / 9).p_value)
+check(escapes == 0, f"constante con ceros: barrido sin escapes ({escapes} de 2000)")
+b = np.array([7442.349368719807, 623.6650188352655, 5.8732187084815095, 482.1421028527768, 0.05124441683726436,
+              69.10765046043326, 0.07246356970270898, 4656.005689076002, 13.523525694052873, 3.0758959477348573])
+r = st.corrected_ttest(b + .02, b, 1 / 9)
+check(np.isnan(r.p_value) and r.decision == st.NOT_AVAILABLE and cerca(r.mean_diff, .02, 1e-9), f"constante con escalas distintas: no evaluable ({r.p_value})")
+escapes = 0
+for _ in range(2000):
+    b = 10 ** barrido.uniform(-2, 4, 10)
+    escapes += np.isfinite(st.corrected_ttest(b + .02, b, 1 / 9).p_value)
+check(escapes == 0, f"escalas 1e-2 a 1e4: barrido sin escapes ({escapes} de 2000)")
+escapes = 0
+for denominador in (3, 7, 9, 11, 13, 15, 17, 19, 21, 23, 29, 31):
+    for _ in range(1940):
+        k = barrido.randint(5, 50, 10)
+        paso = barrido.randint(1, 5)
+        x, y = k / denominador, (k - paso) / denominador
+        escapes += np.isfinite(st.corrected_ttest(x, y, 1 / 9).p_value)
+check(escapes == 0, f"fracciones: barrido de 23 280 sin escapes ({escapes})")
+check(cerca(st.bayes_correlated(cnt / 1000, (cnt - 1) / 1000, 0.0, .1).p_a, 1.0), "bayesiano: constante positiva")
+
+# Una partición enorme no resuelve la diferencia: no impide ver que es constante.
+b = np.r_[1e15, np.array([.2, .3, .25, .4, .35, .22, .28, .31, .27])]
+a = b + .02
+r = st.corrected_ttest(a, b, 1 / 9)
+check(a[0] == b[0] and np.isnan(r.p_value) and r.decision == st.NOT_AVAILABLE, f"constante con partición enorme: no evaluable ({r.p_value})")
+check(cerca(st.corrected_ttest(a, b, 1 / 9).mean_diff, .02, 1e-9), "constante con partición enorme: la diferencia es la de las demás")
+
+# El ruido de una partición enorme no pesa en el t ni en el bayesiano.
+a = np.array([1e16 + 8, .21, .25, .19, .22, .26, .2, .24, .23, .18])
+b = np.array([1e16, .23, .28, .2, .25, .27, .23, .26, .24, .2])
+r = st.corrected_ttest(a, b, 1 / 9)
+d = np.r_[0.0, (a - b)[1:]]
+manual = d.mean() / np.sqrt(d.var(ddof=1) * (1 / 10 + 1 / 9))
+check(cerca(r.statistic, manual, 1e-9) and round(r.statistic, 2) == -3.79, f"partición 1e16: t = -3,79 ({r.statistic})")
+referencia = st.corrected_ttest(np.r_[.5, a[1:]], np.r_[.5, b[1:]], 1 / 9)
+check(cerca(r.p_value, referencia.p_value, 1e-9), "partición 1e16: igual que si valiera cero")
+bayes_a = st.bayes_correlated(a, b, 0.0, .1)
+bayes_b = st.bayes_correlated(np.r_[.5, a[1:]], np.r_[.5, b[1:]], 0.0, .1)
+check(cerca(bayes_a.p_a, bayes_b.p_a, 1e-9), "partición 1e16: bayesiano sin ruido")
+
+# Lo ya corregido sigue igual.
+a = np.array([1e15, .21, .25, .19, .22, .26, .2, .24, .23, .18])
+b = np.array([1e15, .23, .28, .2, .25, .27, .23, .26, .24, .2])
+r = st.corrected_ttest(a, b, 1 / 9)
+check(round(r.statistic, 3) == -3.793 and round(r.p_value, 4) == 0.0043, f"partición 1e15: t = -3,793, p = 0,0043 ({r.statistic}, {r.p_value})")
+
+# El suelo no se traga diferencias reales pequeñas.
+base = np.random.RandomState(4).uniform(.7, .9, 10)
+aleatorio = np.random.RandomState(5)
+for sd in (1e-6, 1e-9, 1e-11):
+    otro = base - (np.abs(aleatorio.normal(0, sd, 10)) + 5 * sd)
+    r = st.corrected_ttest(base, otro, 1 / 9, floor=st.RELATIVE_TOLERANCE)
+    w = st.wilcoxon_test(base, otro, floor=st.RELATIVE_TOLERANCE)
+    check(np.isfinite(r.p_value) and r.decision != st.SAME, f"suelo con sd {sd}: t evaluable")
+    check(abs(w.p_value - 2 / 1024) < 1e-9, f"suelo con sd {sd}: Wilcoxon exacto ({w.p_value})")
+ruido_puro = np.random.RandomState(6).normal(0, 1e-15, 10)
+r = st.corrected_ttest(1e-15 + ruido_puro, 1e-15 * np.ones(10), 1 / 9, floor=1e-12)
+check(r.decision == st.SAME, "suelo: el ruido puro no es diferencia")
+check(np.array_equal(st.rank_blocks(np.array([[1e-15], [2e-15], [.5]]), floor=1e-12)[0].ravel(), [2.5, 2.5, 1]), "suelo: rangos empatan el ruido")
 
 # Cada test decide con su propio estadístico.
 sesgado = np.array([-.01, -.011, -.012, -.013, -.014, -.015, -.016, -.017, -.018, -.019, -.021, .6])
@@ -608,6 +678,8 @@ banco.cerrar()
 # La recomendación no da por buena una varianza de ruido.
 banco = Banco(n_folds=3).datos(clasif).modelos(LogisticRegressionLearner(), MajorityLearner()).correr()
 scoreset = banco.w._scoreset
+a = np.array([14, 13, 15, 13, 14, 14, 13, 12, 14, 13]) / 15
+b = np.array([13, 12, 14, 12, 13, 13, 12, 11, 13, 12]) / 15
 scoreset.folds["CA"] = np.vstack((a, b))
 scoreset.overall["CA"] = np.array([a.mean(), b.mean()])
 opciones = engine.TestOptions(metric="CA")
@@ -618,6 +690,33 @@ check(con_ruido.recommendation == sin_ruido.recommendation, "recomendación igua
 check("No se ha podido evaluar" in " ".join(con_ruido.recommendation) and "Supera" not in " ".join(con_ruido.recommendation),
       "recomendación: varianza nula no es evidencia")
 banco.cerrar()
+
+# Ajuste perfecto: RMSE de 1e-15, las diferencias son ruido numérico.
+semilla_p = np.random.RandomState(9)
+X = semilla_p.normal(size=(200, 3))
+perfecta = Table.from_numpy(Domain([ContinuousVariable(f"x{i}") for i in range(3)], ContinuousVariable("y")),
+                            X, X @ [1, 2, -1] + 5)
+banco = Banco(comparison_metric="RMSE").datos(perfecta).modelos(LinearRegressionLearner(), RidgeRegressionLearner(alpha=1e-13)).correr()
+informe = banco.w._analysis
+check(np.nanmax(banco.w._scoreset.folds["RMSE"]) < 1e-12, "ajuste perfecto: RMSE casi cero")
+for test in (st.TTEST_CORRECTED, st.TTEST_PAIRED, st.WILCOXON):
+    pareja = informe.pairs_of(test)[0]
+    check(pareja.decision == st.SAME and pareja.p_value == 1, f"ajuste perfecto: {test} no ve diferencia ({pareja.decision}, {pareja.p_value})")
+bayes = informe.pairs_of(st.BAYES)[0]
+check(bayes.p_a < .95 and bayes.p_b < .95, f"ajuste perfecto: el bayesiano no decide por ruido ({bayes.p_a}, {bayes.p_b})")
+check("Supera" not in " ".join(informe.recommendation), "ajuste perfecto: sin evidencia en la recomendación")
+banco.cerrar()
+banco = Banco(comparison_metric="MSE").datos(perfecta).modelos(LinearRegressionLearner(), RidgeRegressionLearner(alpha=1e-13)).correr()
+check(banco.w._analysis.pairs_of(st.WILCOXON)[0].decision == st.SAME, "ajuste perfecto: tampoco con MSE")
+banco.cerrar()
+banco = Banco(comparison_metric="RMSE").datos(perfecta).modelos(LinearRegressionLearner(), MeanLearner()).correr()
+check(banco.w._analysis.pairs_of(st.TTEST_CORRECTED)[0].decision == st.A_BETTER, "ajuste perfecto: una diferencia real sigue viéndose")
+banco.cerrar()
+banco = Banco(resampling=OWTestScorePro.LOO, comparison_metric="MAE").datos(perfecta[:40]).modelos(LinearRegressionLearner(), RidgeRegressionLearner(alpha=1e-13)).correr()
+check(banco.w._analysis.pairs_of(st.ROW_WILCOXON)[0].decision == st.SAME, "ajuste perfecto: por filas tampoco")
+banco.cerrar()
+for nombre, valor in (("RMSE", 1e-13 * 12), ("MAE", 1e-13 * 12), ("MSE", 1e-13 * 144), ("AUC", 1e-13), ("MAPE", 1e-11), ("Desconocida", 0.0)):
+    check(cerca(engine.noise_floor(type(nombre, (), {}), np.array([0.5, -12.0])), valor, 1e-20), f"suelo de {nombre}")
 
 # Casos reales con escalas extremas.
 semilla = np.random.RandomState(0)

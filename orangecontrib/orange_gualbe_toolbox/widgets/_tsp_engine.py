@@ -29,6 +29,8 @@ ROWS_ONCE_KINDS = (KFOLD, FEATURE, LOO, ON_TRAIN, ON_TEST)
 LOWER_IS_BETTER = frozenset(("LogLoss", "MSE", "RMSE", "MAE", "MAPE", "SMAPE", "CVRMSE"))
 BOUNDED_METRICS = frozenset(("AUC", "CA", "F1", "Precision", "Recall", "Specificity",
                              "MatthewsCorrCoefficient", "R2"))
+PERCENT_METRICS = frozenset(("MAPE", "SMAPE", "CVRMSE"))
+TARGET_SCALE_METRICS = {"RMSE": 1, "MAE": 1, "MSE": 2}  # exponente de la escala de y
 
 N_BOOTSTRAP = 200
 N_BOOTSTRAP_LARGE = 50
@@ -396,6 +398,27 @@ class TestReport:
         return [pair for pair in self.pairs if pair.test == test]
 
 
+def noise_floor(scorer, actual):
+    """Por debajo de esto, una diferencia de la métrica es ruido numérico.
+
+    Hace falta cuando la métrica vale casi cero (un ajuste perfecto, RMSE de 1e-15): ahí la
+    escala de los propios valores es también casi cero y no protege de nada. Se expresa en la
+    escala natural de la métrica; para una métrica desconocida no se aplica ningún suelo.
+    """
+    name = scorer.__name__
+    tolerance = st.RELATIVE_TOLERANCE
+    if name in BOUNDED_METRICS or name == "LogLoss":
+        return tolerance
+    if name in PERCENT_METRICS:
+        return 100 * tolerance
+    if name in TARGET_SCALE_METRICS:
+        actual = np.asarray(actual, dtype=float)
+        finite = actual[np.isfinite(actual)]
+        scale = float(np.abs(finite).max()) if finite.size else 0.0
+        return tolerance * scale ** TARGET_SCALE_METRICS[name]
+    return 0.0
+
+
 def effective_rope(options, scorer, values):
     if not options.rope_auto:
         return max(options.rope, 0.0)
@@ -478,6 +501,7 @@ def run_tests(scoreset, sampling, options, progress=None):
     alpha = options.alpha
     notes = []
     rope = effective_rope(options, scorer, values)
+    floor = noise_floor(scorer, scoreset.combined.actual)
     ci_low = ci_high = np.full(count, np.nan)
     mean_ranks = np.full(count, np.nan)
     friedman = None
@@ -489,7 +513,7 @@ def run_tests(scoreset, sampling, options, progress=None):
     if fold_matrix is not None:
         adjusted_folds = sign * fold_matrix
         ratio, rho = scoreset.test_train_ratio, scoreset.rho
-        intervals = [st.corrected_interval(row, ratio, alpha) for row in fold_matrix]
+        intervals = [st.corrected_interval(row, ratio, alpha, floor) for row in fold_matrix]
         ci_low = np.array([low for low, _ in intervals])
         ci_high = np.array([high for _, high in intervals])
         primary = st.TTEST_CORRECTED
@@ -502,8 +526,9 @@ def run_tests(scoreset, sampling, options, progress=None):
             for a, b in index_pairs:
                 progress()
                 x, y = adjusted_folds[a], adjusted_folds[b]
-                results = (st.corrected_ttest(x, y, ratio, alpha), st.paired_ttest(x, y, alpha),
-                           st.wilcoxon_test(x, y, alpha=alpha), st.bayes_correlated(x, y, rope, rho))
+                results = (st.corrected_ttest(x, y, ratio, alpha, floor), st.paired_ttest(x, y, alpha, floor),
+                           st.wilcoxon_test(x, y, alpha=alpha, floor=floor),
+                           st.bayes_correlated(x, y, rope, rho, floor))
                 for result in results:
                     result.a, result.b = a, b
                     nominal[result.test].append(result)
@@ -512,7 +537,7 @@ def run_tests(scoreset, sampling, options, progress=None):
             for group in nominal.values():
                 _describe(group, sign, metric_label(scorer), metric_label(scorer))
             pairs_by_test.update(nominal)
-        friedman = st.friedman_test(adjusted_folds, alpha, on_folds=True)
+        friedman = st.friedman_test(adjusted_folds, alpha, on_folds=True, floor=floor)
         if friedman.n_blocks:
             mean_ranks = friedman.mean_ranks
         if count >= 3 and friedman.n_blocks >= 2:
@@ -550,6 +575,7 @@ def run_tests(scoreset, sampling, options, progress=None):
             primary = st.MCNEMAR
     if not classification and count > 1 and fold_matrix is None:
         errors = -np.abs(combined.predicted - combined.actual)
+        row_floor = st.RELATIVE_TOLERANCE * float(np.nanmax(np.abs(combined.actual)))
         row_t, row_w = [], []
         assumption = {
             ON_TEST: "Filas de test independientes; se compara el error absoluto por fila.",
@@ -558,9 +584,9 @@ def run_tests(scoreset, sampling, options, progress=None):
         }.get(sampling.kind, "")
         for a, b in index_pairs:
             progress()
-            result_t = st.corrected_ttest(errors[a], errors[b], 0.0, alpha)
+            result_t = st.corrected_ttest(errors[a], errors[b], 0.0, alpha, row_floor)
             result_t.test, result_t.assumption = st.ROW_TTEST, assumption
-            result_w = st.wilcoxon_test(errors[a], errors[b], st.ROW_WILCOXON, assumption, alpha)
+            result_w = st.wilcoxon_test(errors[a], errors[b], st.ROW_WILCOXON, assumption, alpha, row_floor)
             for result in (result_t, result_w):
                 result.a, result.b = a, b
             row_t.append(result_t)
