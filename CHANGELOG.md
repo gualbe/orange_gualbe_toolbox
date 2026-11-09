@@ -3,6 +3,13 @@
 Cada versión se publica a la vez en GitHub (release `vX.Y.Z`) y en
 [PyPI](https://pypi.org/project/orange-gualbe-toolbox/).
 
+## 0.3.0 (2026-11-09)
+
+- Widget **Test & Score Pro**: evalúa modelos como Test & Score, con sus mismas entradas y
+  salidas, y los compara con tests paramétricos, no paramétricos y bayesianos que tienen en
+  cuenta la dependencia entre particiones. Añade gráficos comparativos, recomendación del mejor
+  modelo, tablas de resultados en la salida e informe exportable en HTML o PDF.
+
 ## 0.2.1 (2026-11-09)
 
 - Corregido en **File Import**: el límite de tiempo y la cancelación de una descarga

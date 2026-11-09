@@ -9,3 +9,4 @@ Utilidades visuales de ciencia de datos para Orange Data Mining.
 
    widgets/smote
    widgets/fileimport
+   widgets/testscorepro

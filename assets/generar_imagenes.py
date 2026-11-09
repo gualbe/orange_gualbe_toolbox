@@ -19,11 +19,18 @@ app = QApplication([])
 
 from orangecontrib.orange_gualbe_toolbox.widgets.owfileimport import OWFileImport  # noqa: E402
 from orangecontrib.orange_gualbe_toolbox.widgets.owsmote import OWSmote  # noqa: E402
+from orangecontrib.orange_gualbe_toolbox.widgets.owtestscorepro import OWTestScorePro  # noqa: E402
+from Orange.classification import (  # noqa: E402
+    LogisticRegressionLearner, MajorityLearner, NaiveBayesLearner, RandomForestLearner, TreeLearner,
+)
 
 
 def esperar(widget):
-    while widget.task is not None or getattr(widget, "_after_preview", None) is not None \
-            and widget._after_preview.isActive():
+    def pendiente(nombre):
+        temporizador = getattr(widget, nombre, None)
+        return temporizador is not None and temporizador.isActive()
+
+    while widget.task is not None or pendiente("_after_preview") or pendiente("_after_task"):
         app.processEvents()
         time.sleep(0.01)
     app.processEvents()
@@ -51,3 +58,13 @@ importar.recent_paths.clear()
 importar.open_path(os.path.join(os.path.dirname(Orange.__file__), "datasets", "heart_disease.tab"))
 esperar(importar)
 capturar(importar, "captura_fileimport.png", 1040, 640)
+
+pro = OWTestScorePro()
+pro.show()
+pro.set_train_data(Table("heart_disease"))
+for posicion, modelo in enumerate((LogisticRegressionLearner(), RandomForestLearner(), NaiveBayesLearner(),
+                                   TreeLearner(), MajorityLearner())):
+    pro.insert_learner(posicion, modelo)
+pro.handleNewSignals()
+esperar(pro)
+capturar(pro, "captura_testscorepro.png", 1120, 660)

@@ -1,0 +1,698 @@
+"""Prueba sin interfaz gráfica de Test & Score Pro.
+
+Script ejecutable con el Python de Orange; sale con 1 si alguna comprobación falla.
+Cubre la validación estadística, la comparación con el Test & Score nativo y la matriz de
+muestreos × tipos de problema × anomalías.
+"""
+import os
+import sys
+import tempfile
+import threading
+import time
+import traceback
+import warnings
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+import baycomp
+import numpy as np
+from scipy import stats
+from statsmodels.stats.contingency_tables import mcnemar as sm_mcnemar
+from statsmodels.stats.multitest import multipletests
+
+from AnyQt.QtWidgets import QApplication
+from Orange.base import Learner
+from Orange.classification import (
+    LogisticRegressionLearner, MajorityLearner, NaiveBayesLearner, RandomForestLearner, TreeLearner,
+)
+from Orange.data import ContinuousVariable, DiscreteVariable, Domain, Table
+from Orange.regression import LinearRegressionLearner, MeanLearner, TreeLearner as TreeRegression
+from Orange.widgets.evaluate.owconfusionmatrix import OWConfusionMatrix
+from Orange.widgets.evaluate.owrocanalysis import OWROCAnalysis
+from Orange.widgets.evaluate.owtestandscore import OWTestAndScore
+
+from orangecontrib.orange_gualbe_toolbox.widgets import _tsp_engine as engine
+from orangecontrib.orange_gualbe_toolbox.widgets import _tsp_report as builder
+from orangecontrib.orange_gualbe_toolbox.widgets import _tsp_stats as st
+from orangecontrib.orange_gualbe_toolbox.widgets.owtestscorepro import OWTestScorePro
+
+warnings.simplefilter("ignore")
+app = QApplication.instance() or QApplication([])
+fallos = 0
+excepciones = []
+DIR = tempfile.mkdtemp(prefix="test-tsp-")
+
+
+def _anotar(*error):
+    texto = "".join(traceback.format_exception(*error))
+    excepciones.append(texto)
+    print("EXCEPCIÓN\n" + texto)
+
+
+sys.excepthook = _anotar
+
+
+def check(ok, msg):
+    global fallos
+    if not ok:
+        print("FAIL " + msg)
+    fallos += not ok
+    return ok
+
+
+def cerca(a, b, tol=1e-9):
+    return bool(abs(a - b) <= tol)
+
+
+# ------------------------------------------------- validación estadística ----
+
+# Demšar (2006), «Statistical comparisons of classifiers over multiple data sets», ej. de la sección 3.2.3.
+RANGOS_DEMSAR = [3.143, 2.000, 2.893, 1.964]
+chi2 = st.friedman_from_mean_ranks(RANGOS_DEMSAR, 14)
+check(cerca(round(chi2, 2), 9.28), f"Demšar: χ² = 9,28 ({chi2})")
+check(cerca(round(st.iman_davenport(chi2, 14, 4), 2), 3.69), "Demšar: F de Iman-Davenport = 3,69")
+check(cerca(round(st.critical_difference(4, 14, 0.05), 2), 1.25), "Demšar: CD(0,05) = 1,25")
+check(cerca(round(st.critical_difference(4, 14, 0.10), 2), 1.12), "Demšar: CD(0,10) = 1,12")
+# Tabla 5 de Demšar: valores críticos q_α de Nemenyi para k = 2…10.
+for alpha, tabla in ((0.05, (1.960, 2.343, 2.569, 2.728, 2.850, 2.949, 3.031, 3.102, 3.164)),
+                     (0.10, (1.645, 2.052, 2.291, 2.459, 2.589, 2.693, 2.780, 2.855, 2.920))):
+    for k, publicado in enumerate(tabla, 2):
+        check(abs(st.nemenyi_q(k, alpha) - publicado) <= 0.002, f"q Nemenyi k={k} α={alpha}")
+
+# Wilcoxon de la sección 3.1.3 de Demšar (C4.5 frente a C4.5+m): R+ = 93, R- = 12.
+c45 = np.array([.763, .599, .954, .628, .882, .936, .661, .583, .775, 1, .940, .619, .972, .957])
+c45m = np.array([.768, .591, .971, .661, .888, .931, .668, .583, .838, 1, .962, .666, .981, .978])
+check(st.signed_ranks(c45m - c45, "zsplit") == (93.0, 12.0), "Demšar: sumas de rangos 93 y 12")
+
+# Valor p exacto de Wilcoxon a mano: 5 diferencias positivas distintas → 2·(1/2)^5.
+exacto = st.wilcoxon_test(np.array([1., 2, 3, 4, 5]), np.zeros(5))
+check(cerca(exacto.p_value, 0.0625), "Wilcoxon: p exacto n=5 = 0,0625")
+check(any("nunca podrá" in w for w in exacto.warnings), "Wilcoxon: avisa de que n=5 no alcanza α")
+check(cerca(exacto.effect, 1.0), "Wilcoxon: efecto r = 1 si todo es positivo")
+
+rng = np.random.RandomState(0)
+for semilla in range(30):
+    a = rng.normal(.8, .03, 10)
+    b = a - rng.normal(.01, .02, 10)
+    r = st.corrected_ttest(a, b, 0.0)
+    t = stats.ttest_rel(a, b)
+    check(cerca(r.statistic, t.statistic) and cerca(r.p_value, t.pvalue), "t sin corregir = ttest_rel")
+    d = a - b
+    manual = d.mean() / np.sqrt(d.var(ddof=1) * (1 / 10 + 1 / 9))
+    r = st.corrected_ttest(a, b, 1 / 9)
+    check(cerca(r.statistic, manual) and cerca(r.p_value, 2 * stats.t.sf(abs(manual), 9)), "t de Nadeau-Bengio a mano")
+    medio = stats.t.ppf(.975, 9) * np.sqrt(d.var(ddof=1) * (1 / 10 + 1 / 9))
+    check(cerca(r.ci_low, d.mean() - medio) and cerca(r.ci_high, d.mean() + medio), "IC corregido a mano")
+    check(cerca(r.effect, d.mean() / d.std(ddof=1) * (1 - 3 / (4 * 9 - 1))), "g de Hedges a mano")
+    ref = baycomp.two_on_single(a, b, rope=0.01)
+    r = st.bayes_correlated(a, b, 0.01, 0.1)
+    check(cerca(r.p_a, ref[0]) and cerca(r.p_rope, ref[1]) and cerca(r.p_b, ref[2]), "bayesiano = baycomp")
+    propia = st._student_posterior(d.mean(), d.var(ddof=1), 10, 0.01, 0.1)
+    check(all(cerca(x, y, 1e-12) for x, y in zip(propia, ref)), "posterior propia = baycomp")
+    ref2 = baycomp.two_on_single(a, b)
+    r0 = st.bayes_correlated(a, b, 0.0, 0.1)
+    check(cerca(r0.p_a, ref2[0]) and cerca(r0.p_b, ref2[1]) and r0.p_rope == 0, "bayesiano sin ROPE")
+    w = st.wilcoxon_test(a, b)
+    ref3 = stats.wilcoxon(a - b, method="exact")
+    check(cerca(w.p_value, ref3.pvalue), "Wilcoxon = scipy")
+
+for bb, cc in ((3, 8), (30, 12), (10, 14), (0, 5), (100, 70), (24, 0), (13, 12)):
+    A = np.r_[np.ones(bb, bool), np.zeros(cc, bool), np.ones(25, bool), np.zeros(15, bool)]
+    B = np.r_[np.zeros(bb, bool), np.ones(cc, bool), np.ones(25, bool), np.zeros(15, bool)]
+    r = st.mcnemar_test(A, B)
+    ref = sm_mcnemar([[25, bb], [cc, 15]], exact=bb + cc < 25, correction=True)
+    check(cerca(r.p_value, ref.pvalue) and cerca(r.statistic, ref.statistic), f"McNemar = statsmodels ({bb},{cc})")
+
+valores = rng.uniform(size=40)
+for metodo in ("holm", "bonferroni", "fdr_bh"):
+    ref = multipletests(valores, method=metodo)[1]
+    check(np.allclose(st.adjust_pvalues(valores, metodo), ref), f"{metodo} = statsmodels")
+    con_nan = np.r_[valores[:5], np.nan]
+    salida = st.adjust_pvalues(con_nan, metodo)
+    check(np.isnan(salida[5]) and np.allclose(salida[:5], multipletests(valores[:5], method=metodo)[1]),
+          f"{metodo} ignora los NaN")
+
+for bloques in (6, 15):
+    datos = rng.normal(size=(4, bloques))
+    datos[1, :3] = datos[0, :3]  # empates
+    r = st.friedman_test(datos, on_folds=False)
+    ref = stats.friedmanchisquare(*(-datos))
+    check(cerca(r.chi2, ref.statistic) and cerca(r.p_value, ref.pvalue), "Friedman con empates = scipy")
+
+# Monte Carlo: sin diferencia real y con la correlación de una validación de 10 particiones,
+# el t clásico da demasiados positivos y el corregido respeta α.
+sim = np.random.RandomState(1)
+k, n_sim, rho = 10, 40000, 1 / 10
+comun = sim.normal(size=(n_sim, 1))
+propio = sim.normal(size=(n_sim, k))
+d = np.sqrt(rho) * comun + np.sqrt(1 - rho) * propio
+media, var = d.mean(axis=1), d.var(axis=1, ddof=1)
+t_clasico = media / np.sqrt(var / k)
+t_corregido = media / np.sqrt(var * (1 / k + 1 / (k - 1)))
+limite = stats.t.ppf(.975, k - 1)
+fp_clasico = np.mean(np.abs(t_clasico) > limite)
+fp_corregido = np.mean(np.abs(t_corregido) > limite)
+print(f"Monte Carlo α=0,05: t clásico {fp_clasico:.3f}, t corregido {fp_corregido:.3f}")
+check(fp_clasico > 0.12, f"el t clásico da demasiados positivos ({fp_clasico:.3f})")
+check(abs(fp_corregido - 0.05) < 0.01, f"el t corregido respeta α ({fp_corregido:.3f})")
+
+# Casos degenerados.
+iguales = np.array([.8, .9, .85, .7])
+r = st.corrected_ttest(iguales, iguales, 0.1)
+check(r.p_value == 1 and r.decision == st.SAME, "t: modelos idénticos")
+r = st.corrected_ttest(iguales, iguales - .1, 0.1)
+check(np.isnan(r.p_value) and any("Varianza nula" in w for w in r.warnings), "t: varianza nula avisa")
+r = st.corrected_ttest(np.array([.8]), np.array([.7]), 0.1)
+check(np.isnan(r.p_value) and r.warnings, "t: una sola partición avisa")
+r = st.corrected_ttest(np.array([.8, np.nan, .7, .6]), np.array([.7, .5, np.nan, .5]), 0.1)
+check(r.n == 2 and any("descartado" in w for w in r.warnings), "t: particiones sin definir se descartan")
+r = st.wilcoxon_test(iguales, iguales)
+check(r.p_value == 1 and r.decision == st.SAME, "Wilcoxon: idénticos")
+r = st.wilcoxon_test(np.array([.1, .2, .2, .3, 0.]), np.zeros(5))
+check(any("empat" in w for w in r.warnings), "Wilcoxon: avisa de empates")
+r = st.bayes_correlated(iguales, iguales, 0.01, .25)
+check(r.p_rope == 1 and any("Varianza nula" in w for w in r.warnings), "bayesiano: varianza nula")
+r = st.bayes_correlated(iguales, iguales - .1, 0.01, .25)
+check(r.p_a == 1, "bayesiano: varianza nula con diferencia")
+r = st.mcnemar_test(np.ones(5, bool), np.ones(5, bool))
+check(r.p_value == 1 and r.decision == st.SAME, "McNemar: mismos aciertos")
+r = st.friedman_test(np.ones((3, 6)))
+check(r.p_value == 1 and any("empatan" in w for w in r.warnings), "Friedman: todo empatado")
+r = st.friedman_test(np.ones((2, 6)))
+check(np.isnan(r.p_value) and any("3 modelos" in w for w in r.warnings), "Friedman: 2 modelos")
+r = st.friedman_test(rng.normal(size=(3, 4)))
+check(any("concibieron" in w for w in r.warnings), "Friedman: dice que son particiones")
+check(any("recomiendan" in w for w in r.warnings), "Friedman: pocos bloques avisa")
+
+
+# --------------------------------------------------------------------- banco ----
+
+class Banco:
+    SALIDAS = "predictions evaluations_results scores fold_scores comparisons ranks best_learner".split()
+
+    def __init__(self, ajustes=None, **opciones):
+        self.w = OWTestScorePro.__new__(OWTestScorePro, signal_manager=None, stored_settings=ajustes)
+        self.w.__init__()
+        self.salida = {}
+        for nombre in self.SALIDAS:
+            getattr(self.w.Outputs, nombre).send = self._capturar(nombre)
+        # Sin ajustes de un workflow, Orange aplica los guardados por el usuario: se fijan aquí.
+        if ajustes is None:
+            for nombre, valor in dict(resampling=0, n_folds=3, cv_stratified=True, n_repeats=3, sample_size=9,
+                                      shuffle_stratified=True, random_seed=42, parallel_models=True,
+                                      comparison_metric="", alpha_index=1, correction_method="holm",
+                                      rope_auto=True, rope_value=0.01, hidden_metrics=[]).items():
+                setattr(self.w, nombre, valor)
+            self.w.alpha_combo.setCurrentIndex(1)
+        for nombre, valor in opciones.items():
+            setattr(self.w, nombre, valor)
+        self.n = 0
+
+    def _capturar(self, nombre):
+        def recibir(valor):
+            self.salida[nombre] = valor
+        return recibir
+
+    def esperar(self):
+        inicio = time.time()
+        app.processEvents()
+        while (self.w.task is not None or self.w._after_task.isActive() or self.w._debounce.isActive()) \
+                and time.time() - inicio < 180:
+            app.processEvents()
+            time.sleep(0.002)
+        app.processEvents()
+        check(self.w.task is None, "el cálculo termina")
+
+    def datos(self, data, test=None):
+        self.w.set_train_data(data)
+        if test is not None:
+            self.w.set_test_data(test)
+        return self
+
+    def modelos(self, *learners):
+        for learner in learners:
+            self.w.insert_learner(self.n, learner)
+            self.n += 1
+        return self
+
+    def correr(self):
+        self.w.handleNewSignals()
+        self.esperar()
+        return self
+
+    def dibujar(self):
+        for grafico in self.w.charts:
+            grafico.figure(6, 4)
+        return self
+
+    def errores(self):
+        return [str(m) for m in self.w.Error.active]
+
+    def avisos(self):
+        return " ".join(str(m) for m in self.w.Warning.active)
+
+    def cerrar(self):
+        self.w.onDeleteWidget()
+
+
+def sintetico(n=120, clases=2, semilla=0, peso_clase=None):
+    r = np.random.RandomState(semilla)
+    y = r.choice(clases, n, p=peso_clase).astype(float)
+    x = r.normal(size=(n, 4)) + y[:, None]
+    dom = Domain([ContinuousVariable(f"x{i}") for i in range(4)],
+                 DiscreteVariable("c", values=tuple(f"v{i}" for i in range(clases))),
+                 [DiscreteVariable("grupo", values=("g1", "g2", "g3", "g4"))])
+    t = Table.from_numpy(dom, x, y, metas=(np.arange(n) % 4)[:, None].astype(float))
+    t.name = "sintético"
+    return t
+
+
+def regresion(n=120, semilla=0):
+    r = np.random.RandomState(semilla)
+    x = r.normal(size=(n, 4))
+    y = x @ [1, 2, -1, .5] + r.normal(size=n)
+    dom = Domain([ContinuousVariable(f"x{i}") for i in range(4)], ContinuousVariable("y"),
+                 [DiscreteVariable("grupo", values=("g1", "g2", "g3", "g4"))])
+    t = Table.from_numpy(dom, x, y, metas=(np.arange(n) % 4)[:, None].astype(float))
+    t.name = "regresión"
+    return t
+
+
+class Falla(Learner):
+    name = "falla"
+
+    def fit_storage(self, data):
+        raise ValueError("este modelo siempre falla")
+
+
+class Contador(LogisticRegressionLearner):
+    name = "contador"
+    veces = 0
+    cerrojo = threading.Lock()
+
+    def __call__(self, data, progress_callback=None):
+        with Contador.cerrojo:
+            Contador.veces += 1
+        return super().__call__(data, progress_callback)
+
+
+# Comparación con el Test & Score nativo real, muestreo a muestreo.
+class Nativo:
+    def __init__(self):
+        self.w = OWTestAndScore.__new__(OWTestAndScore, signal_manager=None, stored_settings=None)
+        self.w.__init__()
+        self.salida = {}
+        self.w.Outputs.predictions.send = lambda v: self.salida.__setitem__("predictions", v)
+        self.w.Outputs.evaluations_results.send = lambda v: self.salida.__setitem__("evaluations_results", v)
+        for nombre, valor in dict(resampling=0, n_folds=2, cv_stratified=True, n_repeats=3, sample_size=9,
+                                  shuffle_stratified=True, class_selection=OWTestAndScore.TARGET_AVERAGE).items():
+            setattr(self.w, nombre, valor)
+
+    def ejecutar(self, data, test, learners):
+        self.w.set_train_data(data)
+        if test is not None:
+            self.w.set_test_data(test)
+        for i, learner in enumerate(learners):
+            self.w.insert_learner(i, learner)
+        self.w.handleNewSignals()
+        inicio = time.time()
+        while self.w._OWTestAndScore__state.name == "Running" and time.time() - inicio < 120:
+            app.processEvents()
+            time.sleep(0.002)
+        app.processEvents()
+
+
+clasif = Table("heart_disease")
+clasif.name = "heart_disease"
+tres = sintetico(150, 3)
+reg = regresion(150)
+MUESTREOS = {
+    "kfold": (OWTestScorePro.KFOLD, dict(n_folds=2, cv_stratified=True)),
+    "por característica": (OWTestScorePro.FEATURE, {}),
+    "aleatorio": (OWTestScorePro.SHUFFLE, dict(n_repeats=2, sample_size=9, shuffle_stratified=True)),
+    "dejar uno fuera": (OWTestScorePro.LOO, {}),
+    "entrenamiento": (OWTestScorePro.ON_TRAIN, {}),
+    "test": (OWTestScorePro.ON_TEST, {}),
+}
+CLAS = [LogisticRegressionLearner, NaiveBayesLearner, MajorityLearner]
+REGR = [LinearRegressionLearner, MeanLearner, TreeRegression]
+for problema, base, modelos in (("clasificación", tres, CLAS), ("regresión", reg, REGR)):
+    tren, prueba = base[:110], base[110:]
+    for nombre, (tipo, ajustes) in MUESTREOS.items():
+        datos_kw = tren[:60] if tipo == OWTestScorePro.LOO else tren
+        etiqueta = f"{problema} / {nombre}"
+        nativo = Nativo()
+        nativo.w.resampling = tipo
+        for clave, valor in ajustes.items():
+            setattr(nativo.w, clave, valor)
+        nativo.ejecutar(datos_kw, prueba if tipo == OWTestScorePro.ON_TEST else None, [m() for m in modelos])
+
+        banco = Banco(resampling=tipo, **ajustes)
+        banco.datos(datos_kw, prueba if tipo == OWTestScorePro.ON_TEST else None).modelos(*[m() for m in modelos]).correr().dibujar()
+        check(not banco.errores(), f"{etiqueta}: sin errores {banco.errores()}")
+        propia, suya = banco.salida.get("evaluations_results"), nativo.salida.get("evaluations_results")
+        if not (check(propia is not None and suya is not None, f"{etiqueta}: hay resultados")):
+            continue
+        check(np.array_equal(propia.predicted, suya.predicted), f"{etiqueta}: mismas predicciones que el nativo")
+        check(np.array_equal(propia.row_indices, suya.row_indices), f"{etiqueta}: mismas filas")
+        if suya.probabilities is not None:
+            check(np.allclose(propia.probabilities, suya.probabilities), f"{etiqueta}: mismas probabilidades")
+        check(propia.learner_names == suya.learner_names, f"{etiqueta}: mismos nombres")
+        tp, ts = banco.salida["predictions"], nativo.salida["predictions"]
+        check(tp.domain == ts.domain and np.array_equal(tp.X, ts.X) and len(tp) == len(ts), f"{etiqueta}: tabla de predicciones")
+        for escala, slot in zip(range(len(modelos)), nativo.w.learners.values()):
+            for scorer, valor in zip(nativo.w.scorers, slot.stats):
+                if valor.success:
+                    propio = banco.w._scoreset.overall[scorer.__name__][escala]
+                    check(np.isclose(propio, valor.value[0], equal_nan=True), f"{etiqueta}: {scorer.__name__} = nativo")
+        informe = banco.w._analysis
+        check(len(informe.pairs) > 0, f"{etiqueta}: hay comparaciones")
+        check(informe.best >= 0 and banco.salida["best_learner"] is not None, f"{etiqueta}: hay mejor modelo")
+        check(banco.salida["scores"].X.shape[0] == len(modelos), f"{etiqueta}: tabla de puntuaciones")
+        check(banco.salida["ranks"] is not None and banco.salida["comparisons"] is not None, f"{etiqueta}: rangos y comparaciones")
+        tabla_folds = banco.salida["fold_scores"]
+        if tipo in engine.FOLD_KINDS:
+            check(tabla_folds is not None and len(tabla_folds) == len(modelos) * len(propia.folds), f"{etiqueta}: tabla por particiones")
+            check(st.BAYES in informe.available and st.TTEST_CORRECTED in informe.available and informe.primary == st.TTEST_CORRECTED,
+                  f"{etiqueta}: tests por particiones")
+            check(informe.friedman is not None and informe.friedman.n_blocks > 0, f"{etiqueta}: Friedman")
+            check(np.isfinite(informe.ci_low).all(), f"{etiqueta}: intervalos")
+        else:
+            check(tabla_folds is None, f"{etiqueta}: sin tabla por particiones")
+            check(st.TTEST_CORRECTED not in informe.available, f"{etiqueta}: sin t por particiones")
+            esperado = st.MCNEMAR if problema == "clasificación" else st.ROW_WILCOXON
+            check(informe.primary == esperado, f"{etiqueta}: test principal por filas ({informe.primary})")
+        if tipo == OWTestScorePro.SHUFFLE and problema == "clasificación":
+            check(st.MCNEMAR not in informe.available, f"{etiqueta}: sin McNemar (filas repetidas)")
+        if tipo == OWTestScorePro.ON_TRAIN:
+            check("optimistas" in banco.avisos(), f"{etiqueta}: avisa de que es optimista")
+        banco.cerrar()
+        nativo.w.onDeleteWidget()
+
+# Compatibilidad con los widgets de evaluación que consumen la salida.
+banco = Banco(n_folds=2).datos(clasif).modelos(LogisticRegressionLearner(), TreeLearner()).correr()
+resultados = banco.salida["evaluations_results"]
+for clase in (OWConfusionMatrix, OWROCAnalysis):
+    receptor = clase.__new__(clase, signal_manager=None, stored_settings=None)
+    receptor.__init__()
+    receptor.set_results(resultados)
+    receptor.handleNewSignals()
+    app.processEvents()
+    check(not list(receptor.Error.active), f"{clase.__name__} acepta la salida")
+    receptor.onDeleteWidget()
+
+# Clase objetivo: mismos valores que el nativo con esa clase.
+nativo = Nativo()
+nativo.w.n_folds = 2
+nativo.ejecutar(tres, None, [LogisticRegressionLearner(), NaiveBayesLearner()])
+nativo.w.class_selection = "v1"
+nativo.w.update_stats_model()
+banco = Banco(n_folds=2).datos(tres).modelos(LogisticRegressionLearner(), NaiveBayesLearner()).correr()
+banco.w.class_selection = "v1"
+banco.w._scoreset = None
+banco.w._start_analysis()
+banco.esperar()
+modelo = nativo.w.score_table.model
+check(modelo.columnCount() > 4, "clase objetivo: el nativo ha dado puntuaciones")
+for columna in range(3, modelo.columnCount()):
+    nombre = modelo.horizontalHeaderItem(columna).text()
+    scorer = next(s for s in nativo.w.scorers if s.name == nombre or s.long_name == nombre)
+    valor = float(modelo.item(0, columna).data(0))
+    check(np.isclose(banco.w._scoreset.overall[scorer.__name__][0], valor), f"clase objetivo: {nombre} = nativo")
+por_fold = banco.w._scoreset.folds["CA"].mean(axis=1)
+check(np.isfinite(por_fold).all(), "clase objetivo: particiones")
+banco.cerrar()
+nativo.w.onDeleteWidget()
+
+# Rigor: el t corregido sale de las particiones reales, con su ρ.
+banco = Banco(n_folds=2).datos(clasif).modelos(LogisticRegressionLearner(), TreeLearner()).correr()
+scoreset, informe = banco.w._scoreset, banco.w._analysis
+check(cerca(scoreset.rho, 1 / 5) and cerca(scoreset.test_train_ratio, 1 / 4), "k=5: ρ=1/5 y n_test/n_train=1/4")
+pareja = informe.pairs_of(st.TTEST_CORRECTED)[0]
+filas = scoreset.folds["AUC"]
+esperado = st.corrected_ttest(filas[0], filas[1], 1 / 4)
+check(cerca(pareja.p_value, esperado.p_value), "t corregido sobre las particiones reales")
+banco.w.set_train_data(clasif)
+banco.modelos(NaiveBayesLearner()).correr()
+informe = banco.w._analysis
+for test in (st.TTEST_CORRECTED, st.WILCOXON):
+    parejas = informe.pairs_of(test)
+    check(np.allclose([p.p_adjusted for p in parejas], multipletests([p.p_value for p in parejas], method="holm")[1]),
+          f"{test}: el p ajustado es el de Holm")
+scoreset = banco.w._scoreset
+filas = scoreset.folds["AUC"]
+pareja = next(p for p in informe.pairs_of(st.TTEST_CORRECTED) if (p.a, p.b) == (0, 1))
+check(cerca(pareja.p_value, st.corrected_ttest(filas[0], filas[1], 1 / 4).p_value), "t corregido con 3 modelos")
+ref = baycomp.two_on_single(filas[0], filas[1], rope=informe.rope)
+bayes = next(p for p in informe.pairs_of(st.BAYES) if (p.a, p.b) == (0, 1))
+check(cerca(bayes.p_a, ref[0]), "bayesiano sobre las particiones reales = baycomp")
+banco.cerrar()
+banco = Banco(resampling=OWTestScorePro.SHUFFLE, n_repeats=3, sample_size=9).datos(clasif).modelos(LogisticRegressionLearner(), TreeLearner()).correr()
+scoreset = banco.w._scoreset
+n_test = len(clasif) - round(len(clasif) * .66)
+check(abs(scoreset.rho - n_test / len(clasif)) < 0.01, f"aleatorio: ρ es la fracción de test ({scoreset.rho})")
+banco.cerrar()
+
+# Otras métricas de error: menor es mejor y el mejor modelo sale bien.
+banco = Banco(n_folds=2, comparison_metric="RMSE").datos(reg).modelos(MeanLearner(), LinearRegressionLearner()).correr()
+informe = banco.w._analysis
+check(informe.lower_better and informe.names[informe.best].startswith("linear"), "RMSE: gana la regresión lineal")
+pareja = informe.pairs_of(st.TTEST_CORRECTED)[0]
+check(pareja.decision == st.B_BETTER, f"RMSE: B (lineal) mejor ({pareja.decision})")
+check(informe.rope > 0.001 and informe.rope != 0.01, "RMSE: ROPE relativo a la escala")
+banco.cerrar()
+
+# ------------------------------------------------------------------ anomalías ----
+
+def error_de(tabla, *textos, **opciones):
+    banco = Banco(**opciones).datos(tabla).modelos(LogisticRegressionLearner()).correr()
+    mensaje = " ".join(banco.errores())
+    check(mensaje, f"debe dar error con {textos}: {banco.avisos()}")
+    for texto in textos:
+        check(texto in mensaje, f"{texto!r} no está en {mensaje!r}")
+    check(banco.salida.get("evaluations_results") is None, f"sin salida con {textos}")
+    banco.cerrar()
+
+
+error_de(clasif[:0], "vacía")
+error_de(clasif.transform(Domain(clasif.domain.attributes)), "variable objetivo")
+error_de(clasif.transform(Domain([], clasif.domain.class_var)), "atributos")
+dos_clases = Domain(clasif.domain.attributes[:3], [clasif.domain.class_var, DiscreteVariable("z", values=("a", "b"))])
+error_de(Table.from_numpy(dos_clases, np.zeros((6, 3)), np.zeros((6, 2))), "varias variables objetivo")
+constante = sintetico(30)
+with constante.unlocked():
+    constante.Y[:] = 0
+error_de(constante, "un valor")
+toda_nan = sintetico(30)
+with toda_nan.unlocked():
+    toda_nan.Y[:] = np.nan
+error_de(toda_nan, "ningún valor")
+error_de(sintetico(4), "particiones", n_folds=3)  # 10 particiones con 4 filas
+
+perdidos = sintetico(60)
+with perdidos.unlocked():
+    perdidos.Y[:5] = np.nan
+banco = Banco(n_folds=1).datos(perdidos).modelos(LogisticRegressionLearner()).correr()
+check("5 filas" in banco.avisos() and banco.salida["evaluations_results"] is not None, "filas sin clase: se quitan y avisa")
+banco.cerrar()
+
+rara = sintetico(40)
+with rara.unlocked():
+    rara.Y[:] = np.r_[np.zeros(39), 1]
+banco = Banco(n_folds=3).datos(rara).modelos(MajorityLearner(), NaiveBayesLearner()).correr().dibujar()
+check("estratificar" in banco.avisos() and banco.salida["evaluations_results"] is not None, "estratificación imposible: sigue y avisa")
+indefinidas = banco.w._scoreset.undefined["AUC"]
+check(indefinidas > 0, f"AUC indefinido en particiones con una sola clase ({indefinidas})")
+check("no está definida" in banco.avisos(), "AUC indefinido: se indica")
+banco.cerrar()
+banco = Banco(resampling=OWTestScorePro.SHUFFLE, n_repeats=1, sample_size=2).datos(rara).modelos(MajorityLearner()).correr()
+check("estratificar" in banco.avisos() and banco.salida["evaluations_results"] is not None, "aleatorio: estratificación imposible")
+banco.cerrar()
+
+banco = Banco(resampling=OWTestScorePro.FEATURE).datos(clasif).modelos(LogisticRegressionLearner()).correr()
+check(banco.errores() and "atributo" in " ".join(banco.errores()), "por característica sin atributo: mensaje")
+banco.cerrar()
+falta = sintetico(60)
+falta_dom = Domain(falta.domain.attributes, falta.domain.class_var, [DiscreteVariable("grupo", values=("g1", "g2"))])
+falta = Table.from_numpy(falta_dom, falta.X, falta.Y, metas=np.zeros((60, 1)))
+banco = Banco(resampling=OWTestScorePro.FEATURE).datos(falta).modelos(LogisticRegressionLearner()).correr()
+check("dos valores" in " ".join(banco.errores()), "por característica con un solo valor: mensaje")
+banco.cerrar()
+
+# Modelo que falla: no tumba a los demás y se indica cuál y por qué.
+banco = Banco(n_folds=1).datos(clasif).modelos(LogisticRegressionLearner(), Falla(), TreeLearner()).correr().dibujar()
+check("falla" in banco.avisos() and "siempre falla" in banco.avisos(), "modelo que falla: se indica")
+check(banco.w._analysis is not None and len(banco.w._analysis.names) == 2, "modelo que falla: siguen los demás")
+check(banco.salida["evaluations_results"].predicted.shape[0] == 2, "modelo que falla: salida con los demás")
+banco.cerrar()
+banco = Banco(n_folds=1).datos(clasif).modelos(Falla()).correr()
+check("falla" in banco.avisos() and banco.salida["evaluations_results"] is None, "todos fallan: sin salida")
+banco.cerrar()
+banco = Banco(n_folds=1).datos(reg).modelos(LogisticRegressionLearner(), LinearRegressionLearner()).correr()
+check("logistic regression" in banco.avisos() and banco.salida["evaluations_results"] is not None, "modelo incompatible con regresión: se indica")
+banco.cerrar()
+
+# Datos de test.
+banco = Banco(resampling=OWTestScorePro.ON_TEST).datos(clasif).modelos(LogisticRegressionLearner()).correr()
+check("Falta" in banco.avisos() and banco.salida["evaluations_results"] is None, "sin datos de test: avisa")
+banco.cerrar()
+banco = Banco(resampling=OWTestScorePro.ON_TEST).datos(clasif, tres).modelos(LogisticRegressionLearner()).correr()
+check("objetivo distintas" in " ".join(banco.errores()), "test con otra clase: mensaje")
+banco.cerrar()
+banco = Banco(n_folds=1).datos(clasif, clasif).modelos(LogisticRegressionLearner()).correr()
+check("no se usan" in banco.avisos(), "datos de test sin usar: avisa")
+banco.cerrar()
+otro = clasif.transform(Domain(clasif.domain.attributes[:6], clasif.domain.class_var))
+banco = Banco(resampling=OWTestScorePro.ON_TEST).datos(clasif, otro).modelos(LogisticRegressionLearner()).correr()
+check(banco.w.Information.test_transformed.is_shown(), "test con otros atributos: se indica")
+banco.cerrar()
+sin_filas = Banco(resampling=OWTestScorePro.ON_TEST).datos(clasif)
+sin_filas.w.set_test_data(clasif[:0])
+sin_filas.modelos(LogisticRegressionLearner()).correr()
+check("vacía" in " ".join(sin_filas.errores()), "test vacío: mensaje")
+sin_filas.cerrar()
+
+# Modelos idénticos, uno solo, dos, muchos; datos dispersos.
+banco = Banco(n_folds=2).datos(clasif).modelos(LogisticRegressionLearner(), LogisticRegressionLearner()).correr().dibujar()
+check(banco.w._analysis.names == ["logistic regression", "logistic regression (2)"], "modelos idénticos: nombres únicos")
+pareja = banco.w._analysis.pairs_of(st.TTEST_CORRECTED)[0]
+check(pareja.p_value == 1 and pareja.decision == st.SAME, "modelos idénticos: p=1")
+check(banco.w._analysis.friedman.n_models == 2 and st.NEMENYI not in banco.w._analysis.available, "dos modelos: sin Friedman")
+banco.cerrar()
+banco = Banco(n_folds=1).datos(clasif).modelos(LogisticRegressionLearner()).correr().dibujar()
+check(banco.w._analysis is not None and not banco.w._analysis.pairs, "un modelo: sin comparaciones")
+check(banco.salida["comparisons"] is None and banco.salida["best_learner"] is not None, "un modelo: salidas coherentes")
+banco.cerrar()
+muchos = [MajorityLearner() if i % 3 == 0 else NaiveBayesLearner() for i in range(25)]
+banco = Banco(n_folds=1).datos(tres).modelos(*muchos).correr().dibujar()
+check(len(banco.w._analysis.names) == 25 and len(banco.salida["scores"]) == 25, "25 modelos")
+check(banco.w.task is None and not banco.errores(), "25 modelos: sin errores")
+banco.cerrar()
+continuo = sintetico(150).to_sparse()
+banco = Banco(n_folds=1).datos(continuo).modelos(LogisticRegressionLearner(), NaiveBayesLearner()).correr()
+check(banco.salida.get("evaluations_results") is not None, f"datos dispersos: hay resultado {banco.avisos()}")
+check(not banco.errores(), f"datos dispersos: sin errores {banco.errores()}")
+banco.cerrar()
+
+# Reutilización: las opciones no reentrenan y un modelo nuevo solo entrena el nuevo.
+Contador.veces = 0
+banco = Banco(n_folds=1).datos(clasif).modelos(Contador(), NaiveBayesLearner()).correr()
+base = Contador.veces
+check(base == 3, f"entrena una vez por partición ({base})")
+banco.w.comparison_metric = "CA"
+banco.w._options_changed()
+banco.esperar()
+check(banco.w._analysis.metric == "CA" and Contador.veces == base, "cambiar la métrica no reentrena")
+banco.w.alpha_index = 2
+banco.w._options_changed()
+banco.esperar()
+check(banco.w._analysis.alpha == 0.1 and Contador.veces == base, "cambiar α no reentrena")
+banco.w.correction_method = "bonferroni"
+banco.w._options_changed()
+banco.esperar()
+check(Contador.veces == base, "cambiar la corrección no reentrena")
+banco.modelos(TreeLearner()).correr()
+check(Contador.veces == base and len(banco.w._analysis.names) == 3, "añadir un modelo no reentrena los otros")
+banco.w.remove_learner(2)
+banco.n -= 1
+banco.correr()
+check(Contador.veces == base and len(banco.w._analysis.names) == 2, "quitar un modelo no reentrena")
+banco.cerrar()
+
+# Paralelo = secuencial, y el reparto solo se usa cuando compensa.
+check(engine.default_workers(3, None, 100) == 1, "datos pequeños: sin hilos")
+check(engine.default_workers(3, object(), 100000) == 1, "con preprocesador compartido: sin hilos")
+modelos_p = [("a", LogisticRegressionLearner()), ("b", NaiveBayesLearner()), ("c", TreeLearner()), ("d", Falla())]
+muestreo = engine.Sampling(k=3, seed=42)
+uno = engine.evaluate(clasif, None, modelos_p, muestreo, workers=1)
+varios = engine.evaluate(clasif, None, modelos_p, muestreo, workers=3)
+for clave in "abc":
+    check(np.array_equal(uno[clave].results.predicted, varios[clave].results.predicted), f"paralelo = secuencial ({clave})")
+check(varios["d"].error is not None and uno["d"].error is not None, "un fallo en paralelo no afecta a los demás")
+
+# Cambios durante el cálculo y cancelación.
+grande = sintetico(30000, 2)
+banco = Banco(n_folds=4).datos(grande).modelos(RandomForestLearner(n_estimators=30), NaiveBayesLearner())
+banco.w.handleNewSignals()
+check(banco.w.task is not None and "evaluations_results" not in banco.salida, "evalúa en segundo plano")
+time.sleep(0.05)
+app.processEvents()
+banco.w.set_train_data(clasif)
+banco.w.handleNewSignals()
+banco.esperar()
+check(len(banco.salida["predictions"]) == len(clasif), "un cambio de datos descarta el cálculo anterior")
+banco.w.set_train_data(grande)
+banco.w.handleNewSignals()
+inicio = time.perf_counter()
+banco.w.cancel_evaluation()
+check(banco.w.task is None and time.perf_counter() - inicio < 1, "cancelar es inmediato")
+time.sleep(0.2)
+app.processEvents()
+check(banco.w.task is None, "tras cancelar no sigue el cálculo")
+banco.cerrar()
+
+# Salida de tablas.
+banco = Banco(n_folds=2).datos(clasif).modelos(LogisticRegressionLearner(), TreeLearner(), NaiveBayesLearner()).correr().dibujar()
+puntos = banco.salida["scores"]
+check(all(v.name in [a.name for a in puntos.domain.attributes] for v in [ContinuousVariable("AUC"), ContinuousVariable("Rango medio"), ContinuousVariable("Entrenamiento (s)")]), "scores: columnas")
+folds = banco.salida["fold_scores"]
+check(folds.domain.class_var.name == "Modelo" and len(folds) == 15, "fold_scores: una fila por partición y modelo")
+modelo_0 = folds[folds.Y == 0]
+check(np.allclose(modelo_0.get_column("AUC"), banco.w._scoreset.folds["AUC"][0]), "fold_scores: valores por modelo")
+comparar = banco.salida["comparisons"]
+check("p ajustado" in [a.name for a in comparar.domain.attributes] and "Decisión" in [m.name for m in comparar.domain.metas], "comparisons: columnas")
+check(banco.salida["ranks"].get_column("Posición").min() == 1, "ranks: posiciones")
+
+# Informe.
+ruta = os.path.join(DIR, "informe.html")
+banco.w.export_report(ruta)
+banco.esperar()
+contenido = open(ruta, encoding="utf-8").read()
+for texto in ("Datos y muestreo", "Modelos", "Puntuaciones", "Gráficos", "Comparaciones estadísticas", "Reproducibilidad",
+              "Nadeau", "McNemar", "Semilla", "scikit-learn", "baycomp", "concibieron", "Supuesto"):
+    check(texto in contenido, f"informe: incluye {texto}")
+check(contenido.count("data:image/png;base64,") >= 4, "informe: gráficos incrustados")
+check("http://" not in contenido and "https://" not in contenido and "src='/" not in contenido, "informe: autocontenido")
+pdf = os.path.join(DIR, "informe.pdf")
+banco.w.export_report(pdf)
+banco.esperar()
+with open(pdf, "rb") as stream:
+    check(stream.read(5) == b"%PDF-" and os.path.getsize(pdf) > 100000, "informe en PDF con los gráficos")
+check(not list(banco.w.Error.active), "informe: sin errores")
+banco.w.export_report("/ruta/que/no/existe/informe.html")
+banco.esperar()
+check(banco.w.Error.report.is_shown(), "informe: ruta no válida da mensaje")
+banco.w.Error.report.clear()
+banco.w.send_report()
+check(len(banco.w.report_html) > 2000, "informe nativo de Orange")
+imagen = os.path.join(DIR, "g.svg")
+banco.w.chart_cd.write_image(imagen)
+check(os.path.getsize(imagen) > 1000, "exportar imagen")
+banco.w.tabs.setCurrentIndex(3)
+banco.w.show()
+app.processEvents()
+time.sleep(0.3)
+app.processEvents()
+banco.w.grab()
+banco.w.scores_proxy.sort(1)
+check(banco.w.scores_proxy.rowCount() == 3, "tabla ordenable")
+
+# Estado con el workflow.
+banco.w.comparison_metric = "CA"
+banco.w.alpha_index = 0
+banco.w.resampling = OWTestScorePro.SHUFFLE
+banco.w.correction_method = "fdr_bh"
+banco.w.rope_auto = False
+banco.w.rope_value = 0.05
+banco.w.random_seed = 7
+ajustes = banco.w.settingsHandler.pack_data(banco.w)
+banco.cerrar()
+nuevo = Banco(ajustes=ajustes).datos(clasif).modelos(LogisticRegressionLearner(), NaiveBayesLearner()).correr()
+check(nuevo.w.resampling == OWTestScorePro.SHUFFLE and nuevo.w.random_seed == 7, "se restaura el muestreo")
+informe = nuevo.w._analysis
+check(informe.metric == "CA" and informe.alpha == 0.01 and informe.correction == "fdr_bh" and informe.rope == 0.05, "se restauran las opciones")
+nuevo.cerrar()
+
+check(not excepciones, "sin excepciones sin capturar:\n" + "\n".join(excepciones))
+print("\nFALLOS:", fallos)
+sys.exit(1 if fallos else 0)

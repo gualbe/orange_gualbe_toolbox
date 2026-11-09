@@ -25,6 +25,7 @@ español (F1 o icono **?**).
 |---|---|
 | **SMOTE** | Balancea las clases generando instancias sintéticas de las minoritarias. Muestra la distribución antes y después. |
 | **File Import** | Importa datos desde un archivo o una URL (CSV, TSV, TAB, XLS/XLSX y ARFF) con vista previa y edición de columnas. |
+| **Test & Score Pro** | Evalúa modelos como Test & Score y los compara con tests estadísticos rigurosos, gráficos e informe exportable. |
 
 ### SMOTE
 
@@ -69,6 +70,27 @@ Reúne en un solo widget lo mejor de **File** y **CSV File Import** de Orange.
   con contraseña, URL con errores o que devuelven una página web, etc.
 
 Las opciones y las ediciones se guardan con el workflow.
+
+### Test & Score Pro
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/gualbe/orange_gualbe_toolbox/main/assets/captura_testscorepro.png" alt="Widget Test &amp; Score Pro: recomendación del mejor modelo y tabla de puntuaciones" width="760">
+</p>
+
+Parte de **Test & Score** de Orange, con sus mismas entradas, muestreos y salidas, y responde
+a la pregunta clave: ¿la diferencia entre modelos es real o se debe al azar?
+
+- **Tests rigurosos**: t corregido de Nadeau-Bengio y t bayesiano correlacionado (las particiones
+  de una validación cruzada no son independientes), Wilcoxon, Friedman con Nemenyi y Holm, McNemar,
+  corrección por comparaciones múltiples, tamaños de efecto e intervalos de confianza.
+- **Cada test dice en qué se apoya** y avisa si no se cumple.
+- **Gráficos**: distribución por particiones, diferencias críticas, matriz de comparaciones y
+  probabilidades bayesianas, exportables como imagen.
+- **Recomendación** del mejor modelo, justificada, en lenguaje llano.
+- **Salidas adicionales**: puntuaciones por modelo y por partición, comparaciones, rangos y mejor
+  modelo.
+- **Informe** autocontenido en HTML o PDF, reproducible.
+- En segundo plano y cancelable. Cambiar la métrica o los tests no vuelve a entrenar.
 
 ## Ayuda de los widgets
 
