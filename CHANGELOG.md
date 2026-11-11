@@ -3,6 +3,24 @@
 Cada versión se publica a la vez en GitHub (release `vX.Y.Z`) y en
 [PyPI](https://pypi.org/project/orange-gualbe-toolbox/).
 
+## 0.4.0 (2026-11-11)
+
+- **Test & Score Pro**: nueva validación por **ventana deslizante** para modelos de series temporales,
+  que respeta el orden del tiempo. Se ordena por una variable de tiempo (también en tablas de
+  Orange3-Timeseries) o por el orden de las filas, y se elige el inicio (fila o fecha), el entrenamiento
+  inicial (porcentaje, filas o hasta una fecha), el avance (creciente o de tamaño fijo), el test, el
+  hueco y el paso (en filas o en tiempo, con meses y años de calendario), el fin (fecha o final) y qué
+  hacer con el último test incompleto. Las filas con la misma fecha nunca se separan.
+- Vista previa de las ventanas que cambia con las opciones, con el número de iteraciones y de
+  entrenamientos antes de lanzar; las evaluaciones muy grandes esperan a que se pulse **Evaluar**.
+- **Multi-horizonte**: con varias variables objetivo, cada una se entrena y evalúa por separado con las
+  mismas ventanas. Nueva pestaña **Horizontes** (matriz modelo × objetivo y curva por horizonte) y
+  nueva salida **Horizon Scores**.
+- Test principal **Diebold-Mariano** con la corrección de Harvey, Leybourne y Newbold y la
+  autocorrelación del horizonte; los tests sobre iteraciones quedan como orientativos.
+- Pestañas **Ventanas** e **Iteraciones**; Predictions y Fold Scores incluyen la iteración, las fechas
+  de cada ventana y el objetivo. El informe HTML y PDF añade la ventana, las iteraciones y los horizontes.
+
 ## 0.3.6 (2026-11-09)
 
 - **Test & Score Pro**: nuevo diseño del informe en PDF, con una primera página de resumen, numeración,

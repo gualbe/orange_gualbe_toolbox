@@ -51,7 +51,14 @@ EXPLANATIONS = {
         "independientes si proceden de un conjunto separado."),
     st.ROW_WILCOXON: (
         "Versión no paramétrica del anterior: rangos con signo del error absoluto por fila."),
+    st.DIEBOLD_MARIANO: (
+        "Compara la pérdida de dos modelos instancia a instancia en el test de todas las iteraciones, en "
+        "orden temporal. La varianza tiene en cuenta la autocorrelación hasta el retardo h − 1, siendo h el "
+        "horizonte, y se corrige para muestras pequeñas (Harvey, Leybourne y Newbold). Es el test "
+        "principal de la ventana deslizante."),
 }
+
+MAX_ITERATION_MODELS = 6
 
 SUMMARY_MODELS = 10
 MAX_LISTED_PAIRS = 6
@@ -110,6 +117,7 @@ class FigureSpec:
 class Figures:
     specs: List[FigureSpec]
     wide: bool = False
+    full: bool = False  # una figura a todo el ancho y media página de alto
 
 
 @dataclass
@@ -348,6 +356,9 @@ def build_blocks(context, scoreset, report):
         blocks.extend(Note(line) for line in context["failures"])
     blocks.extend(Note(_localise(line, names)) for line in (context.get("notes") or []))
 
+    if context.get("window"):
+        _window_blocks(blocks, context["window"], scoreset, report)
+
     blocks.append(Heading(2, "Modelos"))
     blocks.append(TableBlock(["Modelo", "Parámetros"], [[str(n), str(p)] for n, p in context["models"]], label="Modelos"))
 
@@ -401,6 +412,70 @@ def build_blocks(context, scoreset, report):
                                     small=True, bullet=True) for p in pairs)
         blocks.extend(Note(line) for line in grouped_warnings(pairs, names, seen))
     return document
+
+
+def _window_blocks(blocks, window, scoreset, report):
+    """Configuración, vista de las ventanas, resultados por iteración y por horizonte."""
+    theme = plots.REPORT
+    plan, names = window["plan"], report.names
+    blocks.append(Heading(2, "Ventana deslizante"))
+    blocks.append(TableBlock(["Opción", "Valor"], [[str(k), str(v)] for k, v in window["config"]],
+                             key_value=True, label="Ventana deslizante"))
+    blocks.append(Figures([FigureSpec("Ventanas de entrenamiento y test",
+                                      lambda w, h: plots.windows_figure(plan, w, h, theme))], full=True))
+    folds = scoreset.folds.get(report.metric) if scoreset.has_folds else None
+    shown = list(report.order)[:MAX_ITERATION_MODELS]
+    headers = ["Iteración", "Entrenamiento", "Filas", "Test", "Filas test"]
+    if folds is not None:
+        headers += [names[m] for m in shown]
+    rows = []
+    sizes = scoreset.fold_sizes
+    for position, it in enumerate(plan.iterations):
+        row = [str(it.index + 1), plan.span(it.train_lo, it.train_hi), str(it.n_train),
+               plan.span(it.test_lo, it.test_hi) + ("" if it.complete else " (incompleto)"),
+               str(int(sizes[position]) if sizes is not None and position < len(sizes) else it.n_test)]
+        if folds is not None:
+            row += [number(folds[m, position]) if position < folds.shape[1] else "—" for m in shown]
+        rows.append(row)
+    target = window.get("target")
+    blocks.append(Heading(3, "Iteraciones"))
+    intro = "Fechas de cada ventana"
+    if folds is not None:
+        intro += f" y {report.metric_label} de cada modelo en su test"
+        if len(names) > len(shown):
+            intro += f" (los {len(shown)} mejores de {len(names)} modelos)"
+    if target:
+        intro += f", para el objetivo «{target}»"
+    blocks.append(Paragraph(_localise(intro + ".", names), keep_next=True))
+    blocks.append(TableBlock(headers, rows, numeric=tuple(range(5, len(headers))) + (2, 4), label="Iteraciones"))
+    if folds is not None:
+        blocks.append(Figures([FigureSpec(f"Evolución de {report.metric_label} por iteración",
+                                          lambda w, h: plots.iterations_figure(report, scoreset, plan, w, h, theme))],
+                              full=True))
+    targets = window.get("target_names") or []
+    values = window.get("horizon_values")
+    if len(targets) > 1 and values is not None:
+        blocks.append(Heading(2, "Horizontes"))
+        blocks.append(Paragraph(_localise(
+            f"{report.metric_label} global de cada modelo con cada variable objetivo. Cada objetivo se entrena "
+            "y evalúa por separado, con las mismas ventanas; la posición del objetivo es su horizonte.",
+            names), keep_next=True))
+        best = (np.nanargmin if report.lower_better else np.nanargmax)
+        rows = []
+        for model in report.order:
+            rows.append([names[model]] + [number(values[model, t]) for t in range(len(targets))])
+        table = TableBlock(["Modelo"] + list(targets), rows, numeric=tuple(range(1, len(targets) + 1)), best=0,
+                           label="Horizontes")
+        blocks.append(table)
+        finite = np.isfinite(values).any(axis=0)
+        winners = [f"{targets[t]}: {names[int(best(values[:, t]))]}" for t in range(len(targets)) if finite[t]]
+        if winners:
+            blocks.append(Paragraph("Mejor modelo por objetivo: " + "; ".join(winners) + ".", small=True,
+                                    keep_previous=True))
+        blocks.append(Figures([FigureSpec("Métrica por horizonte",
+                                          lambda w, h: plots.horizons_figure(
+                                              names, targets, values, report.metric_label, report.lower_better,
+                                              w, h, theme))], full=True))
 
 
 # ------------------------------------------------------------------- HTML ----

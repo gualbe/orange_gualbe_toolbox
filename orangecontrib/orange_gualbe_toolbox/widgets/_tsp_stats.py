@@ -33,6 +33,7 @@ NEMENYI = "nemenyi"
 HOLM_POSTHOC = "friedman_holm"
 ROW_TTEST = "row_t"
 ROW_WILCOXON = "row_wilcoxon"
+DIEBOLD_MARIANO = "diebold_mariano"
 
 TEST_NAMES = {
     TTEST_CORRECTED: "t corregido (Nadeau-Bengio)",
@@ -44,6 +45,7 @@ TEST_NAMES = {
     HOLM_POSTHOC: "Holm (tras Friedman)",
     ROW_TTEST: "t emparejado por filas (error absoluto)",
     ROW_WILCOXON: "Wilcoxon por filas (error absoluto)",
+    DIEBOLD_MARIANO: "Diebold-Mariano (HLN)",
 }
 
 CORRECTIONS = {
@@ -459,6 +461,91 @@ def _decide_bayes(result):
         result.decision = "equivalentes"
     else:
         result.decision = UNDECIDED
+    return result
+
+
+def long_run_variance(differences, lags):
+    """Varianza a largo plazo de una serie: γ₀ + 2·Σ γₖ, k = 1…lags (núcleo rectangular).
+
+    Las autocovarianzas se centran en la media y se dividen por T, como en Diebold y Mariano
+    (1995) y en `forecast::dm.test` de R.
+    """
+    d = np.asarray(differences, dtype=float)
+    n = len(d)
+    centred = d - d.mean()
+    gammas = [float(centred @ centred) / n]
+    for lag in range(1, min(lags, n - 1) + 1):
+        gammas.append(float(centred[lag:] @ centred[:-lag]) / n)
+    return gammas[0] + 2 * sum(gammas[1:]), gammas
+
+
+def diebold_mariano(loss_a, loss_b, horizon=1, alpha=ALPHA_DEFAULT, floor=0.0):
+    """Diebold-Mariano con la corrección de Harvey, Leybourne y Newbold (1997).
+
+    `loss_a` y `loss_b` son las pérdidas por instancia de test, en orden temporal (menos es
+    mejor). Por dentro la diferencia se orienta como el resto del módulo: d = pérdida(B) −
+    pérdida(A), positiva si A es mejor. La varianza de la media usa las autocovarianzas hasta
+    el retardo h − 1, porque los errores de un pronóstico a h pasos son un MA(h − 1). Si esa
+    varianza sale negativa, se repite con h = 1, como hace `forecast::dm.test`.
+    """
+    a, b = np.asarray(loss_a, dtype=float), np.asarray(loss_b, dtype=float)
+    keep = np.isfinite(a) & np.isfinite(b)
+    floor = np.asarray(floor, dtype=float)
+    floor = floor[keep] if floor.ndim else floor
+    a, b = a[keep], b[keep]
+    horizon = max(int(horizon), 1)
+    result = PairTest(DIEBOLD_MARIANO, n=len(a), assumption=(
+        "Diferencia de pérdidas estacionaria, con autocorrelación hasta el retardo h − 1 "
+        f"(h = {horizon}); corrección de Harvey, Leybourne y Newbold para muestras pequeñas."))
+    removed = int((~keep).sum())
+    if removed:
+        result.warnings.append(f"Se han descartado {removed} filas con la pérdida sin definir.")
+    n = len(a)
+    if n < 3:
+        result.warnings.append("Hacen falta al menos 3 instancias de test comparables.")
+        return result
+    differences = clean_differences(b, a, floor)
+    mean = float(np.mean(differences))
+    result.mean_diff = mean
+    result.direction = int(np.sign(mean))
+    mean_a, mean_b = float(np.mean(a)), float(np.mean(b))
+    if mean_b > 0:
+        result.effect = mean_a / mean_b
+        result.effect_name = "razón de pérdidas medias (A/B)"
+        ratio = max(result.effect, 1 / result.effect) if result.effect > 0 else np.inf
+        result.effect_label = ("insignificante" if ratio < 1.05 else "pequeño" if ratio < 1.25
+                               else "medio" if ratio < 2 else "grande")
+    if not np.ptp(differences):
+        if mean == 0:
+            result.statistic, result.p_value = 0.0, 1.0
+            result.ci_low = result.ci_high = 0.0
+            result.decision = SAME
+            result.numeric_tie = not np.array_equal(a, b)
+            result.warnings.append("Los dos modelos tienen la misma pérdida en todas las instancias"
+                                   + ("." if np.array_equal(a, b) else ", dentro de la precisión numérica."))
+        else:
+            result.ci_low = result.ci_high = mean
+            result.warnings.append("La diferencia de pérdidas es constante: el test no es aplicable.")
+        return result
+    used = horizon
+    variance, _ = long_run_variance(differences, used - 1)
+    if variance <= 0 and used > 1:
+        result.warnings.append(f"La varianza a largo plazo con h = {used} sale negativa: se usa h = 1.")
+        used = 1
+        variance, _ = long_run_variance(differences, 0)
+    correction = (n + 1 - 2 * used + used * (used - 1) / n) / n
+    if correction <= 0:
+        result.warnings.append(f"Con {n} instancias no se puede corregir para h = {used}.")
+        return result
+    scale = np.sqrt(variance / n)
+    statistic = mean / scale * np.sqrt(correction)
+    df = n - 1
+    result.statistic = float(statistic)
+    result.p_value = float(2 * stats.t.sf(abs(statistic), df))
+    half = stats.t.ppf(1 - alpha / 2, df) * scale / np.sqrt(correction)
+    result.ci_low, result.ci_high = mean - half, mean + half
+    if n < 30:
+        result.warnings.append(f"Solo {n} instancias de test: la potencia del test es baja.")
     return result
 
 

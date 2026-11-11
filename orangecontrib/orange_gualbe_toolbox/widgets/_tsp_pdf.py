@@ -437,8 +437,13 @@ def _flows(document, styles):
     return flows
 
 
+FULL_FIGURE_HEIGHT = 300.0
+
+
 def _figure_rows(styles, block):
     half = (BODY_WIDTH - 16.0) / 2
+    if block.full:
+        return [FiguresFlow(styles, [spec], BODY_WIDTH, FULL_FIGURE_HEIGHT) for spec in block.specs]
     if not block.wide:
         return [FiguresFlow(styles, block.specs[i:i + 2], half, 205.0) for i in range(0, len(block.specs), 2)]
     # Con muchos modelos: la matriz a todo el ancho y los demás, de dos en dos a toda altura.

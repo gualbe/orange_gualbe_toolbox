@@ -291,6 +291,201 @@ def times_figure(report, scoreset, width, height, theme):
     return figure
 
 
+# ------------------------------------------------------- ventana deslizante ----
+
+SERIES = ("#2a78d6", "#eb6834", "#3a9e6a", "#8e5bd0", "#d6a32a", "#2ab0c0", "#c0398a", "#6f6e68")
+MAX_DRAWN_ITERATIONS = 40
+
+
+SUPERSCRIPT = str.maketrans("-0123456789", "⁻⁰¹²³⁴⁵⁶⁷⁸⁹")
+
+
+def _compact(value, theme):
+    """Número corto y legible para una celda: 1290, 35,2, 0,0412, 2,1·10⁵."""
+    size = abs(value)
+    if size >= 1e5 or 0 < size < 1e-3:
+        mantissa, exponent = f"{value:.2e}".split("e")
+        return _decimal(mantissa, theme) + "·10" + str(int(exponent)).translate(SUPERSCRIPT)
+    if size >= 100:
+        return f"{value:.0f}"
+    return _decimal(f"{value:.3g}", theme)
+
+
+def _series_color(index, theme):
+    colors = (theme.accent, theme.opposite) + SERIES[2:]
+    return colors[index] if index < len(colors) else theme.neutral
+
+
+def _window_axis(ax, plan, theme):
+    """Eje x temporal (fechas) o de filas, con el formato del tema."""
+    if plan.times is not None:
+        import matplotlib.dates as mdates
+        locator = mdates.AutoDateLocator(minticks=3, maxticks=8)
+        ax.xaxis.set_major_locator(locator)
+        ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator, show_offset=True))
+    else:
+        _comma_ticks(ax.xaxis, theme)
+        ax.set_xlabel("Fila (en el orden de los datos)")
+
+
+def _edges(plan, lo, hi):
+    """Bordes [x0, x1) en el eje de unas filas [lo, hi): fechas en días o números de fila."""
+    if plan.times is None:
+        return lo + 0.5, hi + 0.5
+    spacing = plan.spacing if np.isfinite(plan.spacing) else 0.0
+    left = plan.times[lo]
+    right = plan.times[hi] if hi < plan.n_rows else plan.times[hi - 1] + spacing
+    return left / 86400.0, right / 86400.0
+
+
+def shown_iterations(count, limit=MAX_DRAWN_ITERATIONS):
+    if count <= limit:
+        return list(range(count))
+    return sorted(set(np.linspace(0, count - 1, limit).round().astype(int).tolist()))
+
+
+def windows_figure(plan, width, height, theme, title=True):
+    """Línea temporal de las ventanas: entrenamiento, hueco y test de cada iteración."""
+    if plan is None or plan.n_rows == 0:
+        return message_figure("Sin datos para formar ventanas.", width, height, theme)
+    iterations = plan.iterations
+    if not iterations:
+        return message_figure(plan.error or "No hay ninguna iteración con estas opciones.", width, height, theme)
+    shown = shown_iterations(len(iterations))
+    figure = new_figure(width, max(height, 1.4 + 0.16 * len(shown)), theme)
+    ax = figure.add_subplot()
+    style_axes(ax, theme)
+    bar = 0.72 if len(shown) <= 20 else 0.86
+    for row, index in enumerate(shown):
+        it = iterations[index]
+        x0, x1 = _edges(plan, it.train_lo, it.train_hi)
+        ax.barh(row, x1 - x0, left=x0, height=bar, color=theme.accent, linewidth=0)
+        if it.test_lo > it.train_hi:
+            g0, g1 = _edges(plan, it.train_hi, it.test_lo)
+            ax.barh(row, g1 - g0, left=g0, height=bar, color=theme.neutral, linewidth=0, alpha=0.6)
+        t0, t1 = _edges(plan, it.test_lo, it.test_hi)
+        ax.barh(row, t1 - t0, left=t0, height=bar, color=theme.opposite, linewidth=0,
+                alpha=1.0 if it.complete else 0.5, hatch=None if it.complete else "//")
+    first, last = _edges(plan, 0, plan.n_rows)
+    start, _ = _edges(plan, plan.start, plan.start + 1) if plan.start < plan.n_rows else (last, last)
+    end, _ = _edges(plan, plan.end, plan.end + 1) if plan.end < plan.n_rows else (last, last)
+    if plan.start > 0:
+        ax.axvspan(first, start, color=theme.grid, alpha=0.7, linewidth=0, zorder=0)
+    if plan.end < plan.n_rows:
+        ax.axvspan(end, last, color=theme.grid, alpha=0.7, linewidth=0, zorder=0)
+    ax.set_xlim(first, last)
+    ax.set_ylim(len(shown) - 0.5, -0.5)
+    step = max(1, len(shown) // 12)
+    ticks = list(range(0, len(shown), step))
+    ax.set_yticks(ticks, [str(shown[i] + 1) for i in ticks], color=theme.foreground, fontsize=8.5)
+    ax.set_ylabel("Iteración")
+    ax.grid(axis="x", color=theme.grid, linewidth=0.6)
+    _window_axis(ax, plan, theme)
+    from matplotlib.patches import Patch
+    handles = [Patch(color=theme.accent, label="Entrenamiento"), Patch(color=theme.opposite, label="Test")]
+    if any(it.test_lo > it.train_hi for it in iterations):
+        handles.insert(1, Patch(color=theme.neutral, alpha=0.6, label="Hueco"))
+    if plan.start > 0 or plan.end < plan.n_rows:
+        handles.append(Patch(color=theme.grid, label="Fuera del estudio"))
+    legend = ax.legend(handles=handles, frameon=False, loc="lower right", bbox_to_anchor=(1.0, 1.0),
+                       ncol=len(handles), fontsize=8.5, borderaxespad=0.2, handlelength=1.2)
+    for text in legend.get_texts():
+        text.set_color(theme.foreground)
+    if title:
+        text = f"{len(iterations)} iteraciones"
+        if len(shown) < len(iterations):
+            text += f" (se dibujan {len(shown)})"
+        ax.set_title(_decimal(text, theme), fontsize=9.5, color=theme.muted, loc="left")
+    return figure
+
+
+def iterations_figure(report, scoreset, plan, width, height, theme):
+    """Métrica de cada modelo en cada iteración, a lo largo del tiempo."""
+    folds = scoreset.folds.get(report.metric) if scoreset is not None and scoreset.has_folds else None
+    if folds is None or plan is None or not plan.iterations:
+        return message_figure("Hacen falta al menos 2 iteraciones para ver la evolución.", width, height, theme)
+    figure = new_figure(width, height, theme)
+    ax = figure.add_subplot()
+    style_axes(ax, theme)
+    ax.grid(axis="y", color=theme.grid, linewidth=0.8)
+    _comma_ticks(ax.yaxis, theme)
+    iterations = plan.iterations[:folds.shape[1]]
+    x = np.array([np.mean(_edges(plan, it.test_lo, it.test_hi)) for it in iterations])
+    order = list(report.order)
+    for rank, model in enumerate(order):
+        color = _series_color(rank, theme)
+        width_line = 2.2 if model == report.best else 1.3
+        ax.plot(x, folds[model], color=color, linewidth=width_line, marker="o" if len(x) <= 30 else None,
+                markersize=3.5, label=_short_name(report.names[model], width * 0.9), zorder=3 if rank == 0 else 2)
+    _window_axis(ax, plan, theme)
+    if plan.times is not None:
+        ax.set_xlabel("Centro del test de cada iteración")
+    else:
+        ax.set_xlabel("Centro del test de cada iteración (fila)")
+    ax.set_ylabel(report.metric_label)
+    legend = ax.legend(frameon=False, fontsize=8.5, loc="best", ncol=1 if len(order) <= 6 else 2)
+    for text in legend.get_texts():
+        text.set_color(theme.foreground)
+    return figure
+
+
+def horizons_figure(names, target_names, values, metric, lower_better, width, height, theme):
+    """Matriz modelo × objetivo y curva de la métrica según el horizonte."""
+    values = np.asarray(values, dtype=float)
+    if values.size == 0 or not np.isfinite(values).any():
+        return message_figure("No hay puntuaciones por objetivo.", width, height, theme)
+    n_models, n_targets = values.shape
+    figure = new_figure(width, max(height, 1.6 + 0.3 * n_models), theme)
+    grid = figure.add_gridspec(1, 2, width_ratios=(1.1, 1))
+    ax = figure.add_subplot(grid[0])
+    ax.set_facecolor(theme.background)
+    best = np.nanargmin(np.where(np.isfinite(values), values, np.inf), axis=0) if lower_better else \
+        np.nanargmax(np.where(np.isfinite(values), values, -np.inf), axis=0)
+    for col in range(n_targets):
+        column = values[:, col]
+        finite = column[np.isfinite(column)]
+        low, high = (finite.min(), finite.max()) if finite.size else (0, 1)
+        for row in range(n_models):
+            value = column[row]
+            share = 0.0 if not np.isfinite(value) or high == low else (value - low) / (high - low)
+            goodness = 1 - share if lower_better else share
+            ax.add_patch(Rectangle((col, row), 1, 1, facecolor=theme.accent, alpha=0.12 + 0.6 * goodness,
+                                   edgecolor=theme.background, linewidth=2))
+            if n_models * n_targets <= 160:
+                text = "—" if not np.isfinite(value) else _compact(value, theme)
+                ax.text(col + 0.5, row + 0.5, text, ha="center", va="center", fontsize=8,
+                        color=theme.foreground, fontweight="bold" if row == best[col] else "normal")
+    ax.set_xlim(0, n_targets)
+    ax.set_ylim(n_models, 0)
+    short = [_short_name(name, width * 0.25) for name in target_names]
+    ax.set_xticks(np.arange(n_targets) + 0.5, short, rotation=35 if n_targets > 3 else 0,
+                  ha="right" if n_targets > 3 else "center", color=theme.foreground, fontsize=8.5)
+    ax.set_yticks(np.arange(n_models) + 0.5, [_short_name(n, width * 0.45) for n in names],
+                  color=theme.foreground, fontsize=8.5)
+    ax.tick_params(length=0)
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+    ax.set_title(_wrapped(f"{metric} por modelo y objetivo (más intenso: mejor)", width / 2, 9.5),
+                 fontsize=9.5, color=theme.muted, loc="left")
+    curve = figure.add_subplot(grid[1])
+    style_axes(curve, theme)
+    curve.grid(axis="y", color=theme.grid, linewidth=0.8)
+    _comma_ticks(curve.yaxis, theme)
+    horizons = np.arange(1, n_targets + 1)
+    overall = np.nanmean(values, axis=1)
+    ranking = np.argsort(np.where(np.isfinite(overall), overall if lower_better else -overall, np.inf))
+    for rank, model in enumerate(ranking):
+        curve.plot(horizons, values[model], color=_series_color(rank, theme), marker="o", markersize=4,
+                   linewidth=2.0 if rank == 0 else 1.3, label=_short_name(names[model], width * 0.5))
+    curve.set_xticks(horizons, [str(h) for h in horizons], fontsize=8.5)
+    curve.set_xlabel("Horizonte (posición del objetivo)")
+    curve.set_ylabel(metric)
+    legend = curve.legend(frameon=False, fontsize=8, loc="best")
+    for text in legend.get_texts():
+        text.set_color(theme.foreground)
+    return figure
+
+
 def figure_png(figure, dpi=160):
     buffer = io.BytesIO()
     figure.savefig(buffer, format="png", dpi=dpi, facecolor=figure.get_facecolor())

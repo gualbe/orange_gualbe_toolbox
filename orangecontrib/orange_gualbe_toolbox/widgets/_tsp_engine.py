@@ -21,9 +21,10 @@ from Orange.widgets.evaluate.owtestandscore import results_merge, results_one_vs
 from Orange.widgets.evaluate.utils import scorer_caller
 
 from orangecontrib.orange_gualbe_toolbox.widgets import _tsp_stats as st
+from orangecontrib.orange_gualbe_toolbox.widgets import _tsp_window as tw
 
-KFOLD, FEATURE, SHUFFLE, LOO, ON_TRAIN, ON_TEST = range(6)
-FOLD_KINDS = (KFOLD, FEATURE, SHUFFLE)
+KFOLD, FEATURE, SHUFFLE, LOO, ON_TRAIN, ON_TEST, WINDOW = range(7)
+FOLD_KINDS = (KFOLD, FEATURE, SHUFFLE, WINDOW)
 ROWS_ONCE_KINDS = (KFOLD, FEATURE, LOO, ON_TRAIN, ON_TEST)
 
 LOWER_IS_BETTER = frozenset(("LogLoss", "MSE", "RMSE", "MAE", "MAPE", "SMAPE", "CVRMSE"))
@@ -53,8 +54,12 @@ class Sampling:
     train_fraction: float = 0.66
     feature: object = None
     seed: int = 42
+    window: object = None   # tw.WindowSpec
+    plan: object = None     # tw.WindowPlan, lo rellena check_sampling
 
     def describe(self):
+        if self.kind == WINDOW:
+            return self.window.describe() if self.window is not None else "Ventana deslizante"
         strat = " estratificada" if self.stratified else ""
         if self.kind == KFOLD:
             return f"Validación cruzada{strat} de {self.k} particiones"
@@ -74,12 +79,23 @@ class Sampling:
 class Outcome:
     results: Optional[object] = None
     error: Optional[Exception] = None
+    per_target: Optional[list] = None  # ventana deslizante: un Outcome por variable objetivo
+
+    def part(self, target=0):
+        if self.per_target is None:
+            return self
+        return self.per_target[min(max(target, 0), len(self.per_target) - 1)]
 
 
 def check_sampling(data, test_data, sampling):
     """Devuelve (muestreo ajustado, avisos, error). Nada lanza excepciones."""
     notes = []
     n_rows = len(data)
+    if len(data.domain.class_vars) > 1 and sampling.kind != WINDOW:
+        return sampling, notes, ("Hay varias variables objetivo: elige «Ventana deslizante» para "
+                                 "evaluarlas como horizontes, o deja solo una con Select Columns.")
+    if sampling.kind == WINDOW:
+        return _check_window(data, sampling, notes)
     class_var = data.domain.class_var
     discrete = class_var is not None and class_var.is_discrete
     least, n_classes = None, 0
@@ -144,6 +160,31 @@ def check_sampling(data, test_data, sampling):
     return sampling, notes, None
 
 
+def _check_window(data, sampling, notes):
+    problem = tw.check_targets(data)
+    if problem:
+        return sampling, notes, problem
+    plan = tw.plan_windows(data, sampling.window)
+    sampling.plan = plan
+    notes.extend(plan.notes)
+    if plan.error:
+        return sampling, notes, plan.error
+    for table in tw.target_tables(data, plan):
+        target_notes, problem = tw.target_notes(plan, table)
+        notes.extend(target_notes)
+        if problem:
+            return sampling, notes, problem
+    if sampling.window.advance == tw.EXPANDING:
+        notes.append("Diebold-Mariano es el test principal; los tests sobre iteraciones son "
+                     "orientativos, porque las iteraciones comparten entrenamiento y son "
+                     "consecutivas en el tiempo.")
+    else:
+        notes.append("Diebold-Mariano es el test principal (con ventana de tamaño fijo vale también "
+                     "teniendo en cuenta la estimación de los modelos); los tests sobre iteraciones "
+                     "son orientativos.")
+    return sampling, notes, None
+
+
 def make_sampler(sampling):
     if sampling.kind == KFOLD:
         return Orange.evaluation.CrossValidation(
@@ -198,6 +239,8 @@ def evaluate(data, test_data, learners, sampling, preprocessor=None, workers=1,
             fractions[position] = float(fraction)
 
         copies = [_safe_copy(learner) for _, learner in group]
+        if sampling.kind == WINDOW:
+            return _run_window_group(group, copies, callback)
         sampler = make_sampler(sampling)
         try:
             if sampling.kind == ON_TEST:
@@ -215,6 +258,31 @@ def evaluate(data, test_data, learners, sampling, preprocessor=None, workers=1,
             else:
                 result.learners = [learner]
                 out[key] = Outcome(result)
+        return out
+
+    def _run_window_group(group, copies, callback):
+        try:
+            per_target = tw.run_window(sampling.plan, data, copies, preprocessor, callback)
+        except Cancelled:
+            raise
+        except Exception as error:  # pylint: disable=broad-except
+            return {key: Outcome(error=error) for key, _ in group}
+        parts = {key: [] for key, _ in group}
+        for joint in per_target:
+            if isinstance(joint, Exception):
+                for key, _ in group:
+                    parts[key].append(Outcome(error=joint))
+                continue
+            for (key, learner), result in zip(group, joint.split_by_model()):
+                if result.failed[0]:
+                    parts[key].append(Outcome(error=result.failed[0]))
+                else:
+                    result.learners = [learner]
+                    parts[key].append(Outcome(result))
+        out = {}
+        for key, _ in group:
+            first = parts[key][0]
+            out[key] = Outcome(first.results, first.error, parts[key])
         return out
 
     outcomes = {}
@@ -343,6 +411,8 @@ def compute_scores(keys, names, results, scorers, sampling, n_rows, target=None,
         if sampling.kind == KFOLD:
             rho = 1.0 / len(fold_results)
             ratio = 1.0 / (len(fold_results) - 1)
+        elif sampling.kind == WINDOW:
+            ratio = rho = 0.0  # Nadeau-Bengio no tiene sentido con ventanas en el tiempo
         for scorer in scorers:
             progress()
             instance = scorer()
@@ -370,6 +440,7 @@ class TestOptions:
     correction: str = "holm"
     rope_auto: bool = True
     rope: float = 0.01
+    horizon: int = 1  # h de Diebold-Mariano
 
 
 @dataclass
@@ -481,7 +552,10 @@ def _adjust(pairs, method, alpha):
         st.decide_frequentist(pair, alpha)
 
 
-FLIP_STATISTIC = (st.TTEST_CORRECTED, st.TTEST_PAIRED, st.ROW_TTEST, st.HOLM_POSTHOC)
+FLIP_STATISTIC = (st.TTEST_CORRECTED, st.TTEST_PAIRED, st.ROW_TTEST, st.HOLM_POSTHOC, st.DIEBOLD_MARIANO)
+RATIO_EFFECT = (st.MCNEMAR, st.DIEBOLD_MARIANO)  # el efecto es una razón A/B: no cambia de signo
+ITERATION_ASSUMPTION = ("Iteraciones consecutivas en el tiempo y con entrenamientos solapados: no "
+                        "son independientes. Orientativo.")
 
 
 def _describe(pairs, sign, units, evidence):
@@ -496,7 +570,8 @@ def _describe(pairs, sign, units, evidence):
             continue
         pair.mean_diff = -pair.mean_diff
         pair.ci_low, pair.ci_high = -pair.ci_high, -pair.ci_low
-        pair.effect = -pair.effect
+        if pair.test not in RATIO_EFFECT:
+            pair.effect = -pair.effect
         if pair.test in FLIP_STATISTIC:
             pair.statistic = -pair.statistic
 
@@ -528,25 +603,33 @@ def run_tests(scoreset, sampling, options, progress=None):
         intervals = [st.corrected_interval(row, ratio, alpha, limit) for row, limit in zip(fold_matrix, floors)]
         ci_low = np.array([low for low, _ in intervals])
         ci_high = np.array([high for _, high in intervals])
-        primary = st.TTEST_CORRECTED
+        window = sampling.kind == WINDOW
+        primary = st.DIEBOLD_MARIANO if window else st.TTEST_CORRECTED
         undefined = scoreset.undefined.get(options.metric, 0)
         if undefined:
+            where = "iteraciones" if window else "particiones"
             notes.append(f"{metric_label(scorer)} no está definida en {undefined} de "
-                         f"{fold_matrix.shape[1]} particiones (se descartan al comparar).")
+                         f"{fold_matrix.shape[1]} {where} (se descartan al comparar).")
         if count > 1:
-            nominal = {st.TTEST_CORRECTED: [], st.TTEST_PAIRED: [], st.WILCOXON: [], st.BAYES: []}
+            nominal = {st.TTEST_PAIRED: [], st.WILCOXON: [], st.BAYES: []}
+            if not window:
+                nominal = {st.TTEST_CORRECTED: [], **nominal}
             for a, b in index_pairs:
                 progress()
                 x, y = adjusted_folds[a], adjusted_folds[b]
                 floor = np.maximum(floors[a], floors[b])
-                results = (st.corrected_ttest(x, y, ratio, alpha, floor), st.paired_ttest(x, y, alpha, floor),
-                           st.wilcoxon_test(x, y, alpha=alpha, floor=floor),
-                           st.bayes_correlated(x, y, rope, rho, floor))
+                results = [st.paired_ttest(x, y, alpha, floor), st.wilcoxon_test(x, y, alpha=alpha, floor=floor),
+                           st.bayes_correlated(x, y, rope, rho, floor)]
+                if not window:
+                    results.insert(0, st.corrected_ttest(x, y, ratio, alpha, floor))
                 for result in results:
                     result.a, result.b = a, b
+                    if window:
+                        result.assumption = ITERATION_ASSUMPTION
                     nominal[result.test].append(result)
             for key in (st.TTEST_CORRECTED, st.TTEST_PAIRED, st.WILCOXON):
-                _adjust(nominal[key], options.correction, alpha)
+                if key in nominal:
+                    _adjust(nominal[key], options.correction, alpha)
             for group in nominal.values():
                 _describe(group, sign, metric_label(scorer), metric_label(scorer))
             pairs_by_test.update(nominal)
@@ -569,6 +652,20 @@ def run_tests(scoreset, sampling, options, progress=None):
 
     combined = scoreset.combined
     classification = combined.domain.has_discrete_class
+    if sampling.kind == WINDOW and count > 1:
+        primary = st.DIEBOLD_MARIANO
+        base = results_one_vs_rest(combined, scoreset.target) if scoreset.target is not None else combined
+        kind = tw.loss_kind(options.metric, classification)
+        losses, floor = tw.row_losses(base, kind, st.RELATIVE_TOLERANCE)
+        tests = []
+        for a, b in index_pairs:
+            progress()
+            result = st.diebold_mariano(losses[a], losses[b], options.horizon, alpha, floor)
+            result.a, result.b = a, b
+            tests.append(result)
+        _adjust(tests, options.correction, alpha)
+        _describe(tests, -1.0, tw.LOSS_UNITS[kind], tw.LOSS_EVIDENCE[kind])
+        pairs_by_test = {st.DIEBOLD_MARIANO: tests, **pairs_by_test}
     if classification and count > 1 and sampling.kind in ROWS_ONCE_KINDS:
         correct = combined.predicted == combined.actual
         tests = []
@@ -586,7 +683,7 @@ def run_tests(scoreset, sampling, options, progress=None):
         pairs_by_test[st.MCNEMAR] = tests
         if not primary:
             primary = st.MCNEMAR
-    if not classification and count > 1 and fold_matrix is None:
+    if not classification and count > 1 and fold_matrix is None and sampling.kind != WINDOW:
         errors = -np.abs(combined.predicted - combined.actual)
         row_floor = st.RELATIVE_TOLERANCE * float(np.nanmax(np.abs(combined.actual)))
         row_t, row_w = [], []
@@ -641,7 +738,8 @@ def is_clearly_better(report, a, b):
     return pair.decision == (st.B_BETTER if flipped else st.A_BETTER)
 
 
-METRIC_OF_EVIDENCE = {"aciertos por fila": "CA", "error absoluto por fila": "MAE"}
+METRIC_OF_EVIDENCE = {"aciertos por fila": {"CA"}, "error absoluto por fila": {"MAE"},
+                      **{tw.LOSS_EVIDENCE[kind]: set(metrics) for kind, metrics in tw.LOSS_METRICS.items()}}
 
 
 def _shown(names, indices):
@@ -673,7 +771,7 @@ def _recommend(report, scoreset):
     # McNemar mide aciertos y los tests por filas, error absoluto: solo aportan
     # evidencia sobre la métrica elegida si coincide con lo que miden.
     measured = METRIC_OF_EVIDENCE.get(evidence)
-    about_metric = measured is None or measured == report.metric
+    about_metric = measured is None or report.metric in measured
     if clearly:
         if about_metric:
             lines.append(f"Supera con evidencia ({label}, α = {report.alpha:g}) a: "
@@ -780,3 +878,99 @@ def ranks_table(report):
                   ContinuousVariable(report.metric_label)]
     return _table(attributes, X, [StringVariable("Modelo")], [[name] for name in report.names],
                   "Rangos")
+
+
+# ------------------------------------------------------- ventana deslizante ----
+
+def _window_time_vars(plan, names):
+    """Variables para las fechas de las ventanas: de tiempo, o números de fila."""
+    from Orange.data import TimeVariable
+    var = plan.spec.time_var
+    if var is None:
+        return [ContinuousVariable(name, number_of_decimals=0) for name in names]
+    return [TimeVariable(name, have_date=var.have_date, have_time=var.have_time) for name in names]
+
+
+WINDOW_COLUMNS = ("Inicio entrenamiento", "Fin entrenamiento", "Inicio test", "Fin test")
+
+
+def _window_bounds(plan, iteration):
+    return [plan.value_at(iteration.train_lo), plan.value_at(iteration.train_hi - 1),
+            plan.value_at(iteration.test_lo), plan.value_at(iteration.test_hi - 1)]
+
+
+def window_folds_table(scoresets, plan, target_names):
+    """Una fila por modelo, iteración y objetivo, con las fechas de cada ventana."""
+    scoresets = [s for s in scoresets if s is not None and s.has_folds]
+    if not scoresets:
+        return None
+    first = scoresets[0]
+    labels = unique_labels([metric_label(scorer) for scorer in first.scorers])
+    attributes = [ContinuousVariable(name) for name in labels]
+    model_var = DiscreteVariable("Modelo", values=tuple(first.names))
+    n_iterations = len(first.combined.folds)
+    iteration_var = DiscreteVariable("Iteración", values=tuple(str(i + 1) for i in range(n_iterations)))
+    target_var = DiscreteVariable("Objetivo", values=tuple(target_names))
+    time_vars = _window_time_vars(plan, WINDOW_COLUMNS)
+    counts = [ContinuousVariable("Filas de entrenamiento", number_of_decimals=0),
+              ContinuousVariable("Filas de test", number_of_decimals=0)]
+    X, Y, metas = [], [], []
+    for target, scoreset in enumerate(scoresets):
+        n_models = len(scoreset.names)
+        sizes = scoreset.fold_sizes if scoreset.fold_sizes is not None else np.full(n_iterations, np.nan)
+        for fold in range(n_iterations):
+            iteration = plan.iterations[fold]
+            for model in range(n_models):
+                X.append([scoreset.folds[s.__name__][model, fold] for s in scoreset.scorers])
+                Y.append(model)
+                metas.append([fold, target] + _window_bounds(plan, iteration) + [iteration.n_train, sizes[fold]])
+    domain = Domain(attributes, model_var, [iteration_var, target_var] + time_vars + counts)
+    table = Table.from_numpy(domain, np.array(X, dtype=float), np.array(Y, dtype=float),
+                             metas=np.array(metas, dtype=float).astype(object))
+    table.name = "Puntuaciones por iteración"
+    return table
+
+
+def horizon_table(scoresets, target_names):
+    """Una fila por modelo y objetivo con todas las métricas globales."""
+    scoresets = [s for s in scoresets if s is not None]
+    if not scoresets:
+        return None
+    first = scoresets[0]
+    labels = unique_labels([metric_label(scorer) for scorer in first.scorers])
+    attributes = [ContinuousVariable(name) for name in labels]
+    X, metas = [], []
+    for target, scoreset in enumerate(scoresets):
+        for model, name in enumerate(scoreset.names):
+            X.append([scoreset.overall[s.__name__][model] for s in scoreset.scorers])
+            metas.append([name, target_names[target], float(target + 1)])
+    metas_vars = [StringVariable("Modelo"), StringVariable("Objetivo"),
+                  ContinuousVariable("Horizonte", number_of_decimals=0)]
+    domain = Domain(attributes, metas=metas_vars)
+    table = Table.from_numpy(domain, np.array(X, dtype=float), metas=np.array(metas, dtype=object))
+    table.name = "Puntuaciones por objetivo"
+    return table
+
+
+def add_window_columns(table, results, plan, target_name):
+    """Añade a Predictions la iteración, las fechas de su ventana y el objetivo."""
+    from Orange.data.util import get_unique_names
+    if table is None or plan is None:
+        return table
+    iteration = np.empty(len(results.row_indices), dtype=int)
+    for fold, part in enumerate(results.folds):
+        iteration[part] = fold
+    proposed = ["Iteración"] + list(WINDOW_COLUMNS) + ["Objetivo"]
+    names = get_unique_names(table.domain, proposed)
+    new_vars = ([ContinuousVariable(names[0], number_of_decimals=0)] + _window_time_vars(plan, names[1:5])
+                + [StringVariable(names[5])])
+    bounds = np.array([_window_bounds(plan, plan.iterations[i]) for i in range(len(plan.iterations))])
+    values = np.empty((len(iteration), len(new_vars)), dtype=object)
+    values[:, 0] = iteration + 1.0
+    values[:, 1:5] = bounds[iteration]
+    values[:, 5] = target_name
+    domain = Domain(table.domain.attributes, table.domain.class_vars, table.domain.metas + tuple(new_vars))
+    metas = np.hstack((np.asarray(table.metas, dtype=object).reshape(len(table), -1), values))
+    out = Table.from_numpy(domain, table.X, table.Y, metas=metas, W=table.W if table.has_weights() else None)
+    out.name = table.name
+    return out

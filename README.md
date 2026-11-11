@@ -77,7 +77,8 @@ Las opciones y las ediciones se guardan con el workflow.
   <img src="https://raw.githubusercontent.com/gualbe/orange_gualbe_toolbox/main/assets/captura_testscorepro.png" alt="Widget Test &amp; Score Pro: recomendación del mejor modelo y tabla de puntuaciones" width="760">
 </p>
 
-Parte de **Test & Score** de Orange, con sus mismas entradas, muestreos y salidas, y responde
+Parte de **Test & Score** de Orange, con sus mismas entradas, muestreos y salidas (y uno más, la
+ventana deslizante), y responde
 a la pregunta clave: ¿la diferencia entre modelos es real o se debe al azar?
 
 - **Tests rigurosos**: t corregido de Nadeau-Bengio y t bayesiano correlacionado (las particiones
@@ -87,10 +88,18 @@ a la pregunta clave: ¿la diferencia entre modelos es real o se debe al azar?
 - **Gráficos**: distribución por particiones, diferencias críticas, matriz de comparaciones y
   probabilidades bayesianas, exportables como imagen.
 - **Recomendación** del mejor modelo, justificada, en lenguaje llano.
-- **Salidas adicionales**: puntuaciones por modelo y por partición, comparaciones, rangos y mejor
-  modelo.
+- **Salidas adicionales**: puntuaciones por modelo, por partición y por horizonte, comparaciones,
+  rangos y mejor modelo.
+- **Ventana deslizante para series temporales**: entrena con el pasado y evalúa con el bloque
+  siguiente, con entrenamiento creciente o de tamaño fijo, test, hueco y paso en filas o en tiempo,
+  inicio y fin por fecha y vista previa de las ventanas. Con varias variables objetivo compara los
+  modelos en cada **horizonte**, y los compara con el test de **Diebold-Mariano**.
 - **Informe** autocontenido en HTML o PDF, reproducible.
 - En segundo plano y cancelable. Cambiar la métrica o los tests no vuelve a entrenar.
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/gualbe/orange_gualbe_toolbox/main/assets/captura_ventana.png" alt="Test &amp; Score Pro con ventana deslizante: opciones de la ventana y vista previa de las iteraciones" width="760">
+</p>
 
 ## Ayuda de los widgets
 
