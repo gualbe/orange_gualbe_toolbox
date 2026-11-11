@@ -121,7 +121,10 @@ conectado se ajusta también solo con él.
 
 **Multi-horizonte**: si la tabla tiene dos o más variables objetivo (por ejemplo *y(t+1)*, *y(t+2)* y
 *y(t+3)*), en cada iteración se entrena un modelo contra cada objetivo con los mismos datos de
-entrenamiento y se evalúa con su test. Las demás variables objetivo nunca se usan para aprender. En
+entrenamiento y se evalúa con su test. Las demás variables objetivo nunca se usan para aprender. Las
+filas sin valor en algún objetivo (por ejemplo las últimas, donde *y(t+1)* aún no se conoce) se
+descartan al recibir los datos, antes de formar las ventanas: así todos los objetivos se evalúan sobre
+las mismas filas y los horizontes son comparables. En
 **Comparar → Objetivo** se elige el que analizan las pestañas y las salidas Predictions y Evaluation
 Results; cambiarlo no vuelve a entrenar. La pestaña **Horizontes** muestra la métrica de cada modelo
 con cada objetivo y cómo empeora con el horizonte. Los objetivos deben ser todos numéricos o todos
@@ -275,8 +278,9 @@ Problemas habituales
      - Qué hace el widget
    * - Un modelo falla
      - Los demás siguen; se indica cuál y por qué.
-   * - Filas sin valor en la clase
-     - Se quitan, indicando cuántas.
+   * - Filas sin valor en la clase (o en algún objetivo)
+     - Se descartan antes de evaluar, como en Test & Score, y el widget y el informe dicen cuántas
+       faltaban en cada objetivo.
    * - Estratificación imposible
      - Se hace sin estratificar y se avisa.
    * - Más particiones que filas
@@ -294,8 +298,8 @@ Problemas habituales
      - Error que dice qué reducir.
    * - Fecha fuera del rango de los datos
      - El calendario solo admite fechas dentro del rango; si una fecha deja la ventana vacía, error.
-   * - Una variable objetivo sin valor en algunas filas
-     - Esas filas se quitan solo de ese objetivo, con aviso.
+   * - Una iteración sin entrenamiento o sin test para algún objetivo
+     - Se omite con un aviso que dice cuál es, y las demás se evalúan.
    * - Objetivo constante o con una sola clase en un entrenamiento, o clases del test que no están
        en su entrenamiento
      - Aviso con las iteraciones afectadas; si un modelo falla, se dice en qué iteración y los

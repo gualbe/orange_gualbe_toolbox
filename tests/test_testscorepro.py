@@ -1133,7 +1133,9 @@ perdidos = sintetico(60)
 with perdidos.unlocked():
     perdidos.Y[:5] = np.nan
 banco = Banco(n_folds=1).datos(perdidos).modelos(LogisticRegressionLearner()).correr()
-check("5 filas" in banco.avisos() and banco.salida["evaluations_results"] is not None, "filas sin clase: se quitan y avisa")
+informacion = " ".join(str(m) for m in banco.w.Information.active)
+check("Se han descartado 5 filas sin valor en la variable objetivo" in informacion and
+      banco.salida["evaluations_results"] is not None, "filas sin clase: se quitan e informa")
 banco.cerrar()
 
 rara = sintetico(40)

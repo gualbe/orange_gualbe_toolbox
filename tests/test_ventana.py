@@ -644,16 +644,135 @@ banco = Banco(resampling=OWTestScorePro.KFOLD).datos(serie(60, objetivos=2)).mod
 check("Ventana deslizante" in banco.errores(), "varios objetivos con otro muestreo: indica cómo resolverlo")
 banco.cerrar()
 
-con_perdidos = serie(120, objetivos=2, semilla=3)
-with con_perdidos.unlocked():
-    con_perdidos.Y[[50, 51, 70], 1] = np.nan
-banco = Banco(window_initial_mode=tw.INITIAL_ROWS, window_initial_rows=40).datos(con_perdidos)
-banco.modelos(LinearRegressionLearner(), MeanLearner()).correr()
-check(not banco.errores() and "3 filas sin valor" in banco.avisos(), "objetivo con valores perdidos: fuera de esas iteraciones y avisado")
-segunda = banco.w.learners[0].outcome.part(1).results
-primera = banco.w.learners[0].outcome.part(0).results
-check(len(primera.actual) - len(segunda.actual) == 3 and np.isfinite(segunda.actual).all(),
-      "las filas sin valor se quitan solo del objetivo que no lo tiene")
+# Filas sin valor en algún objetivo: se descartan antes de formar las ventanas, para todos a la vez.
+
+
+def horizontes_con_cola(n=120, objetivos=3, nombre="Fortified", fechas=None, semilla=11):
+    """Como en la captura: el objetivo t+h no tiene valor en las h últimas filas."""
+    r = np.random.RandomState(semilla)
+    base = np.cumsum(r.normal(size=n + 2)) + 50
+    X = np.column_stack([base[1:n + 1], base[:n]])
+    Y = np.full((n, objetivos), np.nan)
+    for h in range(1, objetivos + 1):
+        Y[:n - h, h - 1] = base[2 + h:n + 2]
+    t = ORIGEN + np.arange(n) * DIA if fechas is None else np.asarray(fechas[:n], dtype=float)
+    dominio = Domain([ContinuousVariable("x1"), ContinuousVariable("x2")],
+                     [ContinuousVariable(f"{nombre}_t+{h}") for h in range(1, objetivos + 1)], [FECHA])
+    tabla = Table.from_numpy(dominio, X, Y, metas=t[:, None])
+    tabla.name = "captura"
+    return tabla
+
+
+esperado = ("Se han descartado 3 filas sin valor en algún objetivo (Fortified_t+1: 1; Fortified_t+2: 2; "
+            "Fortified_t+3: 3).")
+mensual_largo = [ORIGEN]
+while len(mensual_largo) < 120:
+    siguiente = mas_meses(datetime.fromtimestamp(mensual_largo[-1], timezone.utc).date(), 1)
+    mensual_largo.append(segundos(siguiente))
+for etiqueta, opciones, fechas in (
+        ("filas", dict(window_unit=tw.UNIT_ROWS), None),
+        ("meses", dict(window_unit=tw.UNIT_TIME, window_time_unit=5), mensual_largo)):
+    for avance in (tw.EXPANDING, tw.ROLLING):
+        captura = horizontes_con_cola(fechas=fechas)
+        banco = Banco(window_initial_mode=tw.INITIAL_ROWS, window_initial_rows=56, window_test=12,
+                      window_last=tw.LAST_KEEP, window_advance=avance, **opciones).datos(captura)
+        banco.modelos(LinearRegressionLearner(), MeanLearner()).correr()
+        nombre = f"captura en {etiqueta}, avance {'creciente' if avance == tw.EXPANDING else 'fijo'}"
+        informacion = " ".join(str(m) for m in banco.w.Information.active)
+        check(not banco.errores() and banco.salida.get("evaluations_results") is not None,
+              f"{nombre}: evalúa sin errores {banco.errores()}")
+        check(esperado in informacion, f"{nombre}: informa de las filas descartadas ({informacion[:160]})")
+        check(len(banco.w.data) == 117 and not np.isnan(banco.w.data.Y).any(), f"{nombre}: quedan 117 filas, todas con objetivo")
+        plan_usado = banco.w._sampling_used.plan
+        previa = banco.w._preview_plan
+        check(previa is not None and [(i.train_lo, i.test_lo, i.test_hi) for i in previa.iterations] ==
+              [(i.train_lo, i.test_lo, i.test_hi) for i in plan_usado.iterations],
+              f"{nombre}: la vista previa refleja los datos que se usan")
+        check(plan_usado.iterations[-1].n_test == 1 and not plan_usado.iterations[-1].complete,
+              f"{nombre}: la última iteración tiene un test de una sola fila")
+        partes = [banco.w.learners[0].outcome.part(t).results for t in range(3)]
+        check(all(p is not None and np.array_equal(p.row_indices, partes[0].row_indices) for p in partes),
+              f"{nombre}: todos los objetivos se evalúan sobre las mismas filas")
+        check(len(banco.salida["evaluations_results"].folds) == len(plan_usado.iterations),
+              f"{nombre}: ninguna iteración perdida")
+        if etiqueta == "filas" and avance == tw.EXPANDING:
+            ruta = os.path.join(DIR, "descartadas.html")
+            banco.w.export_report(ruta)
+            banco.esperar()
+            check(esperado in open(ruta, encoding="utf-8").read(), "el informe dice qué filas se han descartado")
+        banco.cerrar()
+
+for avance in (tw.EXPANDING, tw.ROLLING):
+    medio = serie(120, semilla=3)
+    with medio.unlocked():
+        medio.Y[[30, 31, 77]] = np.nan
+    banco = Banco(window_initial_mode=tw.INITIAL_ROWS, window_initial_rows=40, window_advance=avance).datos(medio)
+    banco.modelos(LinearRegressionLearner(), MeanLearner()).correr()
+    informacion = " ".join(str(m) for m in banco.w.Information.active)
+    check(not banco.errores() and "Se han descartado 3 filas sin valor en la variable objetivo «y+1»." in informacion,
+          f"un objetivo con valores perdidos en medio (avance {avance}): se descartan y se informa")
+    check(np.isfinite(banco.salida["evaluations_results"].actual).all(), "sin valores perdidos en el test")
+    banco.cerrar()
+
+    varios = serie(120, objetivos=3, semilla=3)
+    with varios.unlocked():
+        varios.Y[[50, 51], 1] = np.nan
+        varios.Y[[51, 70], 2] = np.nan
+    banco = Banco(window_initial_mode=tw.INITIAL_ROWS, window_initial_rows=40, window_test=7,
+                  window_advance=avance).datos(varios)
+    banco.modelos(LinearRegressionLearner(), MeanLearner()).correr()
+    informacion = " ".join(str(m) for m in banco.w.Information.active)
+    check(not banco.errores() and "Se han descartado 3 filas sin valor en algún objetivo (y+2: 2; y+3: 2)." in informacion,
+          f"varios objetivos con valores perdidos en medio (avance {avance}): se descarta cada fila una vez ({informacion[:120]})")
+    partes = [banco.w.learners[0].outcome.part(t).results for t in range(3)]
+    check(all(np.array_equal(p.row_indices, partes[0].row_indices) for p in partes) and len(banco.w.data) == 117,
+          "todos los objetivos con las mismas filas")
+    banco.cerrar()
+
+# Sin limpiar (motor usado directamente): una iteración vacía para un objetivo se omite, no para nada.
+sucia = serie(100, objetivos=2, semilla=8)
+with sucia.unlocked():
+    sucia.Y[60:70, 1] = np.nan
+muestreo = engine.Sampling(kind=engine.WINDOW, window=tw.WindowSpec(time_var=FECHA, initial_mode=tw.INITIAL_ROWS,
+                                                                    initial_rows=40, test_size=10))
+muestreo, notas, problema = engine.check_sampling(sucia, None, muestreo)
+omitidas = [n for n in notas if n.startswith("Se omite")]
+check(problema is None and len(muestreo.plan.iterations) == 5 and omitidas and "la 3 (test" in omitidas[0]
+      and "«y+2»" in omitidas[0], f"iteración vacía para un objetivo: se omite y se identifica ({omitidas[:1]})")
+salidas = engine.evaluate(sucia, None, [(0, LinearRegressionLearner())], muestreo)
+check(all(parte.results is not None for parte in salidas[0].per_target) and
+      len(salidas[0].part(1).results.folds) == 5, "el resto de iteraciones se evalúa")
+with sucia.unlocked():
+    sucia.Y[40:, 1] = np.nan
+muestreo = engine.Sampling(kind=engine.WINDOW, window=tw.WindowSpec(time_var=FECHA, initial_mode=tw.INITIAL_ROWS,
+                                                                    initial_rows=40, test_size=10))
+_, _, problema = engine.check_sampling(sucia, None, muestreo)
+check(problema and "Ninguna iteración" in problema, "si no queda ninguna iteración, error que lo explica")
+
+# Con un solo objetivo y otro muestreo: igual que el Test & Score nativo, que también quita esas filas.
+from Orange.widgets.evaluate.owtestandscore import OWTestAndScore
+con_hueco = serie(90, semilla=6)
+with con_hueco.unlocked():
+    con_hueco.Y[[5, 44, 89]] = np.nan
+nativo = OWTestAndScore.__new__(OWTestAndScore, signal_manager=None, stored_settings=None)
+nativo.__init__()
+capturado = {}
+nativo.Outputs.evaluations_results.send = lambda valor: capturado.__setitem__("r", valor)
+nativo.resampling, nativo.n_folds = 0, 1
+nativo.set_train_data(con_hueco)
+nativo.insert_learner(0, LinearRegressionLearner())
+nativo.handleNewSignals()
+inicio = time.time()
+while nativo._OWTestAndScore__state.name == "Running" and time.time() - inicio < 60:
+    app.processEvents()
+    time.sleep(0.002)
+app.processEvents()
+banco = Banco(resampling=OWTestScorePro.KFOLD, n_folds=1).datos(con_hueco).modelos(LinearRegressionLearner()).correr()
+mio = banco.salida["evaluations_results"]
+check(capturado.get("r") is not None and np.array_equal(capturado["r"].row_indices, mio.row_indices) and
+      np.allclose(capturado["r"].predicted, mio.predicted) and len(banco.w.data) == 87,
+      "un objetivo con valores perdidos y validación cruzada: igual que el nativo")
+nativo.onDeleteWidget()
 banco.cerrar()
 
 constante = serie(80, semilla=2)

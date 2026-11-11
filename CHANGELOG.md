@@ -3,6 +3,15 @@
 Cada versión se publica a la vez en GitHub (release `vX.Y.Z`) y en
 [PyPI](https://pypi.org/project/orange-gualbe-toolbox/).
 
+## 0.4.2 (2026-11-11)
+
+- **Test & Score Pro** descarta al recibir los datos las filas sin valor en algún objetivo, antes de
+  formar las ventanas, y lo indica en el widget y en el informe («Se han descartado N filas sin valor
+  en algún objetivo (…)»). Todos los objetivos se evalúan así sobre las mismas filas.
+- Corregido: con varios objetivos, una fila final sin valor (como en *y(t+1)*) dejaba la última
+  iteración sin test y toda la evaluación acababa en error. Ahora una iteración sin entrenamiento o
+  sin test para algún objetivo se omite con un aviso que la identifica, y las demás se evalúan.
+
 ## 0.4.1 (2026-11-11)
 
 - Corregido en la **ventana deslizante** de **Test & Score Pro**: medida en meses o años, con el

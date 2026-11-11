@@ -490,12 +490,10 @@ def target_notes(plan, table):
     missing = int((used & ~valid).sum())
     if missing:
         notes.append(f"«{var.name}»: {missing} filas sin valor quedan fuera del entrenamiento y del test.")
-    empty_test = [it.index for it in plan.iterations if not valid[it.test_lo:it.test_hi].any()]
-    empty_train = [it.index for it in plan.iterations if not valid[it.train_lo:it.train_hi].any()]
-    if empty_test or empty_train:
-        which = sorted(set(empty_test) | set(empty_train))
-        return notes, (f"«{var.name}» no tiene valores en el entrenamiento o el test de "
-                       f"{_iterations_text(which)}: cambia la ventana o quita las filas sin valor.")
+    empty = {it.index for it in plan.iterations
+             if not valid[it.test_lo:it.test_hi].any() or not valid[it.train_lo:it.train_hi].any()}
+    if empty:
+        return notes, empty  # quien llama omite esas iteraciones y vuelve a revisar
     single, unseen, constant = [], [], []
     if var.is_discrete:
         n_classes = len(var.values)
@@ -527,7 +525,53 @@ def target_notes(plan, table):
                      "aparecen en su entrenamiento.")
     if constant:
         notes.append(f"«{var.name}» es constante en el entrenamiento de {_iterations_text(constant)}.")
-    return notes, ""
+    return notes, set()
+
+
+def omit_iterations(plan, empty):
+    """Quita las iteraciones sin entrenamiento o sin test para algún objetivo y lo avisa.
+
+    `empty` asocia el índice de cada iteración con los objetivos que se quedan vacíos. Las
+    demás se renumeran: cada una es una partición de Results, que no admite huecos.
+    """
+    if not empty:
+        return
+    shown = []
+    for index in sorted(empty)[:4]:
+        it = plan.iterations[index]
+        targets = ", ".join(f"«{name}»" for name in empty[index])
+        shown.append(f"la {index + 1} (test {plan.span(it.test_lo, it.test_hi)}; {targets})")
+    more = "…" if len(empty) > 4 else ""
+    count = len(empty)
+    plan.notes.append(
+        f"Se omite{'n' if count > 1 else ''} {count} iteraci{'ones' if count > 1 else 'ón'} sin valores de "
+        f"algún objetivo en su entrenamiento o su test: {'; '.join(shown)}{more}.")
+    kept = [it for it in plan.iterations if it.index not in empty]
+    for position, it in enumerate(kept):
+        it.index = position
+    plan.iterations = kept
+
+
+def drop_missing_targets(data):
+    """Quita las filas sin valor en algún objetivo. Devuelve la tabla y cuántas faltan por objetivo."""
+    Y = np.asarray(data.Y, dtype=float).reshape(len(data), -1)
+    missing = ~np.isfinite(Y)
+    rows = missing.any(axis=1)
+    if not rows.any():
+        return data, {}
+    counts = {var.name: int(missing[:, i].sum()) for i, var in enumerate(data.domain.class_vars)
+              if missing[:, i].any()}
+    return data[~rows], counts
+
+
+def dropped_message(n_rows, counts):
+    """Texto del aviso de filas descartadas por no tener valor en algún objetivo."""
+    rows = f"{n_rows} fila{'s' if n_rows != 1 else ''}"
+    if len(counts) == 1 and n_rows == next(iter(counts.values())):
+        name = next(iter(counts))
+        return f"Se han descartado {rows} sin valor en la variable objetivo «{name}»."
+    detail = "; ".join(f"{name}: {count}" for name, count in counts.items())
+    return f"Se han descartado {rows} sin valor en algún objetivo ({detail})."
 
 
 def _iterations_text(indices):

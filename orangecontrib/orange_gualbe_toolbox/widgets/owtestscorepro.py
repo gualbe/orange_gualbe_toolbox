@@ -387,13 +387,13 @@ class OWTestScorePro(OWWidget, ConcurrentWidgetMixin):
         report = Msg("No se pudo guardar el informe: {}")
 
     class Warning(OWWidget.Warning):
-        missing_class = Msg("Se han quitado {} filas sin valor en la clase.")
         test_missing = Msg("Falta conectar los datos de test.")
         test_unused = Msg("Hay datos de test conectados que no se usan: elige «Sobre datos de test».")
         models_failed = Msg("{}")
         notes = Msg("{}")
 
     class Information(OWWidget.Information):
+        missing_class = Msg("{}")
         test_transformed = Msg("Los datos de test se han transformado para coincidir con los de "
                                "entrenamiento.")
         report_saved = Msg("Informe guardado en {}")
@@ -473,6 +473,7 @@ class OWTestScorePro(OWWidget, ConcurrentWidgetMixin):
         self._sampling_notes = []
         self._pending_analysis = False
         self._report_layout = None
+        self._dropped_rows = ""
         self._scoresets = None
         self._preview_plan = None
         self._large_confirmed = False
@@ -836,19 +837,25 @@ class OWTestScorePro(OWWidget, ConcurrentWidgetMixin):
     def set_train_data(self, data):
         self.cancel_evaluation(quiet=True)
         self.Error.train_data.clear()
-        self.Warning.missing_class.clear()
+        self.Information.missing_class.clear()
+        self._dropped_rows = ""
         if data is not None:
             problem = self._data_problem(data)
             if problem:
                 self.Error.train_data(problem)
                 data = None
-        multi = data is not None and len(data.domain.class_vars) > 1
-        if data is not None and not multi and np.isnan(data.Y).any():
+        if data is not None:
+            # Como el nativo: fuera las filas sin valor en la clase, aquí en cualquiera de los objetivos,
+            # antes de formar particiones o ventanas. Así todos los objetivos usan las mismas filas.
             before = len(data)
-            data = HasClass()(data)
-            self.Warning.missing_class(before - len(data))
+            data, counts = tw.drop_missing_targets(data)
+            if counts:
+                self._dropped_rows = tw.dropped_message(before - len(data), counts)
+                self.Information.missing_class(self._dropped_rows)
             if not len(data):
-                self.Error.train_data("Ninguna fila tiene valor en la variable objetivo.")
+                self.Error.train_data("Ninguna fila tiene valor en " + (
+                    "todas las variables objetivo." if len(data.domain.class_vars) > 1
+                    else "la variable objetivo."))
                 data = None
         self.closeContext()
         self.data = data
@@ -1727,6 +1734,8 @@ class OWTestScorePro(OWWidget, ConcurrentWidgetMixin):
             setup.append(("Distribución de la clase",
                           ", ".join(f"{v}: {c}" for v, c in zip(class_var.values, counts))))
             setup.append(("Clase objetivo", self.class_selection))
+        if self._dropped_rows:
+            setup.append(("Filas descartadas", self._dropped_rows))
         setup.append(("Valores perdidos en los atributos", "sí" if data.has_missing_attribute() else "no"))
         if self.preprocessor is not None:
             setup.append(("Preprocesador", str(self.preprocessor)))

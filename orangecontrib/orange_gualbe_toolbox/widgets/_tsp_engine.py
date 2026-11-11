@@ -169,11 +169,20 @@ def _check_window(data, sampling, notes):
     notes.extend(plan.notes)
     if plan.error:
         return sampling, notes, plan.error
-    for table in tw.target_tables(data, plan):
-        target_notes, problem = tw.target_notes(plan, table)
-        notes.extend(target_notes)
-        if problem:
-            return sampling, notes, problem
+    tables = tw.target_tables(data, plan)
+    empty = {}
+    for table in tables:
+        for index in tw.target_notes(plan, table)[1]:
+            empty.setdefault(index, []).append(table.domain.class_var.name)
+    if empty:
+        tw.omit_iterations(plan, empty)
+        notes.append(plan.notes[-1])
+        if not plan.iterations:
+            plan.error = ("Ninguna iteración tiene valores de todos los objetivos en su entrenamiento y "
+                          "su test: cambia la ventana.")
+            return sampling, notes, plan.error
+    for table in tables:
+        notes.extend(tw.target_notes(plan, table)[0])
     if sampling.window.advance == tw.EXPANDING:
         notes.append("Diebold-Mariano es el test principal; los tests sobre iteraciones son "
                      "orientativos, porque las iteraciones comparten entrenamiento y son "
