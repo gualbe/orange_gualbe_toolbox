@@ -136,7 +136,10 @@ Antes de tocar widgets, ayuda o empaquetado lee
 - El último test incompleto se descarta por defecto (seleccionable). Más de 2.000 entrenamientos
   (iteraciones × modelos × objetivos) esperan al botón Evaluar.
 - Multi-horizonte: un modelo por objetivo e iteración; los demás objetivos pasan a metas, nunca a
-  atributos. Filas sin valor se quitan solo de su objetivo. Objetivos numéricos y categóricos
+  atributos. Las filas sin valor en algún objetivo se descartan al recibir los datos, antes de
+  formar ventanas o particiones, para todos los objetivos a la vez (todos usan las mismas filas), y
+  se informa de cuántas faltaban en cada uno (0.4.2). Una iteración sin entrenamiento o sin test
+  para algún objetivo se omite con aviso; nunca para la evaluación. Objetivos numéricos y categóricos
   mezclados: error. En la comparación entran los modelos que van bien en todos los objetivos.
   Cambiar el objetivo analizado no reentrena.
 - Tests: el principal es Diebold-Mariano con la corrección HLN y la varianza a largo plazo hasta
