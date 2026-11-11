@@ -120,13 +120,39 @@ Antes de tocar widgets, ayuda o empaquetado lee
   útil; las largas repiten cabecera y dejan al menos 3 filas por página; los números no se parten.
   Al cambiar la maquetación, abre las páginas renderizadas: los tests no ven recortes en los gráficos.
 
+### Decisiones de la ventana deslizante de Test & Score Pro (0.4.0, 2026-11-11)
+
+- Pedido por el usuario: validación por ventana deslizante para series temporales, elegible junto a los
+  demás muestreos, con entrenamiento inicial en %, filas o hasta fecha, inicio por fila o fecha, avance
+  creciente o de tamaño fijo, test, fin por fecha y multi-horizonte (varias variables objetivo).
+- Muestreo `WINDOW = 6`, añadido al final para no romper ajustes guardados. Motor sin Qt en
+  `_tsp_window.py`: `plan_windows` calcula las ventanas sin entrenar (vista previa) y la evaluación usa
+  ese mismo plan con `WindowValidation`, subclase de `Validation` de Orange: cada iteración es una
+  partición de Results y el preprocesador se ajusta solo con el entrenamiento de cada iteración.
+- Orden por una variable de tiempo (la de Orange3-Timeseries si la hay) o por el de las filas. Sin
+  fecha: fuera con aviso; desordenadas: se ordenan. Un corte nunca separa filas con la misma fecha.
+- Test, hueco y paso en filas o en tiempo (meses y años de calendario). Todas las fronteras se cuentan
+  desde el origen, nunca desde otra frontera: si no, un inicio a fin de mes pierde días (0.4.1).
+- El último test incompleto se descarta por defecto (seleccionable). Más de 2.000 entrenamientos
+  (iteraciones × modelos × objetivos) esperan al botón Evaluar.
+- Multi-horizonte: un modelo por objetivo e iteración; los demás objetivos pasan a metas, nunca a
+  atributos. Filas sin valor se quitan solo de su objetivo. Objetivos numéricos y categóricos
+  mezclados: error. En la comparación entran los modelos que van bien en todos los objetivos.
+  Cambiar el objetivo analizado no reentrena.
+- Tests: el principal es Diebold-Mariano con la corrección HLN y la varianza a largo plazo hasta
+  h − 1 (h = posición del objetivo, o fijo en Opciones avanzadas), sobre la pérdida de la métrica
+  elegida. No se ofrecen Nadeau-Bengio ni McNemar; t, Wilcoxon, bayesiano (ρ = 0) y Friedman sobre
+  iteraciones son orientativos y lo dicen. Con tests solapados, DM usa la predicción más reciente.
+- Salidas: Predictions y Fold Scores con iteración, fechas de la ventana y objetivo; nueva Horizon
+  Scores. Pestañas Ventanas, Iteraciones y Horizontes tras Puntuaciones (`settings_version` 2).
+
 ## Widgets
 
 | Widget | Fichero / clase | Qué hace |
 |---|---|---|
 | SMOTE | `owsmote.py` / `OWSmote` | Balancea las clases con instancias sintéticas (SMOTE, SMOTENC o SMOTEN); gráfico antes/después. |
 | File Import | `owfileimport.py` / `OWFileImport` (motor en `_fileimport.py`) | Importa desde archivo o URL (CSV, TSV, TAB, XLS/XLSX y ARFF) con vista previa, edición de columnas e importación avanzada. |
-| Test & Score Pro | `owtestscorepro.py` / `OWTestScorePro` (`_tsp_*.py`) | Evalúa modelos como Test & Score y los compara con tests rigurosos, gráficos, tablas de resultados e informe HTML o PDF. |
+| Test & Score Pro | `owtestscorepro.py` / `OWTestScorePro` (`_tsp_*.py`) | Evalúa modelos como Test & Score, también con ventana deslizante para series temporales, y los compara con tests rigurosos, gráficos, tablas de resultados e informe HTML o PDF. |
 
 ## Pruebas
 
