@@ -182,6 +182,7 @@ def _check_window(data, sampling, notes):
         notes.append("Diebold-Mariano es el test principal (con ventana de tamaño fijo vale también "
                      "teniendo en cuenta la estimación de los modelos); los tests sobre iteraciones "
                      "son orientativos.")
+    notes.append(NOT_FOR_WINDOW)
     return sampling, notes, None
 
 
@@ -464,6 +465,7 @@ class TestReport:
     notes: List[str] = field(default_factory=list)
     recommendation: List[str] = field(default_factory=list)
     best: int = -1
+    blocks: str = "particiones"  # cómo se llaman las unidades de remuestreo: particiones o iteraciones
 
     def pairs_of(self, test):
         return [pair for pair in self.pairs if pair.test == test]
@@ -556,6 +558,14 @@ FLIP_STATISTIC = (st.TTEST_CORRECTED, st.TTEST_PAIRED, st.ROW_TTEST, st.HOLM_POS
 RATIO_EFFECT = (st.MCNEMAR, st.DIEBOLD_MARIANO)  # el efecto es una razón A/B: no cambia de signo
 ITERATION_ASSUMPTION = ("Iteraciones consecutivas en el tiempo y con entrenamientos solapados: no "
                         "son independientes. Orientativo.")
+BAYES_WINDOW_ASSUMPTION = ("Posterior t de Student sobre las iteraciones sin correlación (ρ = 0): con una "
+                           "ventana deslizante no hay una correlación conocida que corregir, así que no "
+                           "tiene en cuenta el solapamiento de los entrenamientos. Orientativo.")
+NOT_FOR_WINDOW = ("Con ventana deslizante no se aplican el t corregido de Nadeau-Bengio, que supone "
+                  "particiones al azar, ni McNemar, que supone filas independientes: el test principal "
+                  "es Diebold-Mariano.")
+PAIRED_WINDOW_WARNING = ("Sin corregir: las iteraciones no son independientes y este test da demasiados "
+                         "falsos positivos. Usa Diebold-Mariano, el test principal de la ventana deslizante.")
 
 
 def _describe(pairs, sign, units, evidence):
@@ -618,14 +628,17 @@ def run_tests(scoreset, sampling, options, progress=None):
                 progress()
                 x, y = adjusted_folds[a], adjusted_folds[b]
                 floor = np.maximum(floors[a], floors[b])
-                results = [st.paired_ttest(x, y, alpha, floor), st.wilcoxon_test(x, y, alpha=alpha, floor=floor),
+                paired_warning = PAIRED_WINDOW_WARNING if window else st.PAIRED_WARNING
+                results = [st.paired_ttest(x, y, alpha, floor, paired_warning),
+                           st.wilcoxon_test(x, y, alpha=alpha, floor=floor),
                            st.bayes_correlated(x, y, rope, rho, floor)]
                 if not window:
                     results.insert(0, st.corrected_ttest(x, y, ratio, alpha, floor))
                 for result in results:
                     result.a, result.b = a, b
                     if window:
-                        result.assumption = ITERATION_ASSUMPTION
+                        result.assumption = (BAYES_WINDOW_ASSUMPTION if result.test == st.BAYES
+                                             else ITERATION_ASSUMPTION)
                     nominal[result.test].append(result)
             for key in (st.TTEST_CORRECTED, st.TTEST_PAIRED, st.WILCOXON):
                 if key in nominal:
@@ -714,6 +727,8 @@ def run_tests(scoreset, sampling, options, progress=None):
     report = TestReport(list(scoreset.names), options.metric, metric_label(scorer), bool(sign < 0),
                         values, order, ci_low, ci_high, mean_ranks, pairs, friedman, primary,
                         available, alpha, options.correction, rope, notes)
+    if sampling.kind == WINDOW:
+        report.blocks = "iteraciones"
     if count and np.isfinite(oriented).any():
         report.best = int(order[0])
     report.recommendation = _recommend(report, scoreset)

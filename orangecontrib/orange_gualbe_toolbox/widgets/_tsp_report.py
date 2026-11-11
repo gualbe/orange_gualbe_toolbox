@@ -39,7 +39,8 @@ EXPLANATIONS = {
         "Calcula la probabilidad a posteriori de que un modelo sea mejor, de que sean equivalentes "
         "(diferencia dentro del ROPE) y de que lo sea el otro, considerando la correlación entre "
         "particiones. Se decide con una probabilidad de al menos 0,95; si no, el resultado es "
-        "indeciso."),
+        "indeciso. Con la ventana deslizante no hay una correlación conocida entre iteraciones: se "
+        "aplica sin correlación (ρ = 0) y es orientativo."),
     st.NEMENYI: (
         "Tras Friedman, considera distintos dos modelos si sus rangos medios difieren más que la "
         "diferencia crítica. Se concibió para varios conjuntos de datos."),

@@ -388,12 +388,15 @@ def _plan(plan):
         spacing = plan.spacing if np.isfinite(plan.spacing) else 0.0
         limit = float(times[end - 1]) + (1 + COMPLETE_SLACK) * spacing
         for i in range(MAX_PLANNED):
+            # Todas las fronteras se cuentan desde el origen, nunca desde otra frontera: con meses
+            # y años, partir de una fecha ya recortada a fin de mes (31 → 29 de febrero) arrastra
+            # el recorte y deja días sin evaluar entre tests.
             boundary = shift(origin, i * step, unit)
-            test_from = shift(boundary, gap, unit)
+            test_from = shift(origin, i * step + gap, unit)
             test_lo = max(first_at(test_from), start)
             if test_lo >= end or not np.isfinite(test_from):
                 break
-            test_to = shift(boundary, gap + test, unit)
+            test_to = shift(origin, i * step + gap + test, unit)
             test_hi = min(first_at(test_to), end)
             complete = test_to <= limit
             if not complete and spec.last == LAST_DISCARD:

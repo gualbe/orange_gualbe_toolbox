@@ -294,14 +294,17 @@ def corrected_ttest(a, b, test_train_ratio, alpha=ALPHA_DEFAULT, floor=0.0):
         "diferencias aproximadamente normales.", alpha, floor)
 
 
-def paired_ttest(a, b, alpha=ALPHA_DEFAULT, floor=0.0):
+PAIRED_WARNING = ("Sin corregir: las particiones no son independientes y este test da demasiados "
+                  "falsos positivos. Usa el t corregido.")
+
+
+def paired_ttest(a, b, alpha=ALPHA_DEFAULT, floor=0.0, warning=PAIRED_WARNING):
     """t clásico. Con particiones de validación cruzada da demasiados positivos."""
     result = _t_family(
         a, b, 0.0, TTEST_PAIRED,
         "Observaciones independientes, que las particiones no cumplen; solo como referencia.",
         alpha, floor)
-    result.warnings.append("Sin corregir: las particiones no son independientes y este "
-                           "test da demasiados falsos positivos. Usa el t corregido.")
+    result.warnings.append(warning)
     return result
 
 
@@ -752,7 +755,7 @@ def interpret(result, names, metric, alpha):
     if result.decision == NOT_AVAILABLE:
         return "El test no se ha podido evaluar con estos datos."
     if result.decision in (A_BETTER, B_BETTER):
-        winner = a if result.decision == A_BETTER else b
-        return f"Hay evidencia (α = {alpha:g}) de que {winner} es mejor en {target}."
+        winner, loser = (a, b) if result.decision == A_BETTER else (b, a)
+        return f"Hay evidencia (α = {alpha:g}) de que {winner} es mejor que {loser} en {target}."
     return (f"Sin evidencia suficiente (α = {alpha:g}) de que {a} y {b} difieran en {target}; "
             "esto no demuestra que sean iguales.")

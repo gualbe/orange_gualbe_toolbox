@@ -114,7 +114,7 @@ def scores_figure(report, scoreset, width, height, theme):
     ax.set_yticks(range(len(order)), [_short_name(report.names[i], width) for i in order], color=theme.foreground)
     ax.set_ylim(-0.7, len(order) - 0.3)
     interval = "" if not np.isfinite(report.ci_low).any() else f", IC {1 - report.alpha:.0%}"
-    points = " · puntos: particiones" if folds is not None else ""
+    points = f" · puntos: {getattr(report, 'blocks', 'particiones')}" if folds is not None else ""
     ax.set_xlabel(_wrapped(_decimal(f"{report.metric_label} (rombo: valor global{interval}{points})", theme), width))
     return figure
 

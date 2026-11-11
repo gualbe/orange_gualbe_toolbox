@@ -83,7 +83,8 @@ evaluar. Las opciones, de arriba abajo:
   filas o hasta una fecha (incluida).
 - **Avance**: cómo crece el entrenamiento (ver los dibujos).
 - **Medir en**: filas o tiempo (segundos a años; los meses y los años siguen el calendario) para el
-  test, el hueco y el paso.
+  test, el hueco y el paso. Todas las fechas se cuentan desde el inicio del primer test: si empieza
+  un día 31, cada test empieza el último día de los meses más cortos y no se pierde ningún día.
 - **Test**: tamaño de cada bloque de test, que va justo después del entrenamiento.
 - **Hueco**: separación entre el entrenamiento y el test, por ejemplo para no evaluar con datos
   demasiado cercanos a los del entrenamiento.
@@ -138,7 +139,9 @@ errores de un pronóstico a *h* pasos están autocorrelacionados y usa la correc
 Leybourne y Newbold para muestras pequeñas. El horizonte *h* es la posición del objetivo (1 con un
 solo objetivo); se puede fijar en **Opciones avanzadas → Horizonte DM**. El t corregido de
 Nadeau-Bengio no se ofrece, porque supone particiones al azar; los tests sobre las iteraciones
-(t, Wilcoxon, bayesiano y Friedman) se muestran como orientativos. McNemar tampoco se ofrece: las
+(t, Wilcoxon, bayesiano y Friedman) se muestran como orientativos. El t bayesiano se aplica sin
+correlación entre iteraciones (ρ = 0), porque con ventanas en el tiempo no hay una correlación
+conocida que corregir. McNemar tampoco se ofrece: las
 filas de una serie no son independientes.
 
 La pestaña **Iteraciones** muestra la métrica de cada modelo en cada iteración a lo largo del tiempo.

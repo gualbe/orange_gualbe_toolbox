@@ -3,6 +3,17 @@
 Cada versión se publica a la vez en GitHub (release `vX.Y.Z`) y en
 [PyPI](https://pypi.org/project/orange-gualbe-toolbox/).
 
+## 0.4.1 (2026-11-11)
+
+- Corregido en la **ventana deslizante** de **Test & Score Pro**: medida en meses o años, con el
+  primer test un día 29, 30 o 31 (o un 29 de febrero), algunos días nunca se evaluaban y los tests
+  tenían longitudes irregulares. Ahora todas las fechas se cuentan desde el inicio y los tests quedan
+  contiguos.
+- Textos más precisos con la ventana deslizante: el t sin corregir remite a Diebold-Mariano, la
+  interpretación de cada comparación nombra a los dos modelos, el gráfico de comparación habla de
+  iteraciones, el widget y el informe dicen que el t corregido y McNemar no se aplican, y el t
+  bayesiano explica que va sin correlación (ρ = 0).
+
 ## 0.4.0 (2026-11-11)
 
 - **Test & Score Pro**: nueva validación por **ventana deslizante** para modelos de series temporales,

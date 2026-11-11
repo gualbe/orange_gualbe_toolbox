@@ -28,6 +28,7 @@ from Orange.widgets.evaluate.owconfusionmatrix import OWConfusionMatrix
 
 from orangecontrib.orange_gualbe_toolbox.widgets import _tsp_engine as engine
 from orangecontrib.orange_gualbe_toolbox.widgets import _tsp_pdf as pdf
+from orangecontrib.orange_gualbe_toolbox.widgets._tsp_report import EXPLANATIONS as builder_explicaciones
 from orangecontrib.orange_gualbe_toolbox.widgets import _tsp_stats as st
 from orangecontrib.orange_gualbe_toolbox.widgets import _tsp_window as tw
 from orangecontrib.orange_gualbe_toolbox.widgets.owtestscorepro import OWTestScorePro
@@ -176,6 +177,64 @@ check(all(it.n_test == 7 and it.test_lo == it.train_hi + 7 for it in p.iteration
 p = plan(datos, initial_mode=tw.INITIAL_ROWS, initial_rows=30, unit=tw.UNIT_TIME, time_unit=3, test_size=10,
          advance=tw.ROLLING)
 check(all(it.n_train == 30 for it in p.iterations), "deslizante medido en tiempo: tamaño constante")
+
+# Calendario: con origen en los días 28 a 31 o el 29 de febrero, cada frontera se cuenta desde el
+# origen. Con paso igual al test, los tests son contiguos y no se pierde ningún día.
+import calendar
+from datetime import date, datetime, timedelta, timezone
+
+
+def mas_meses(dia, meses):
+    """Suma meses y recorta al último día del mes, sin pandas (referencia independiente)."""
+    total = dia.month - 1 + meses
+    año, mes = dia.year + total // 12, total % 12 + 1
+    return date(año, mes, min(dia.day, calendar.monthrange(año, mes)[1]))
+
+
+def segundos(dia):
+    return datetime(dia.year, dia.month, dia.day, tzinfo=timezone.utc).timestamp()
+
+
+diario = serie(8 * 366, fechas=[segundos(date(2015, 1, 1) + timedelta(days=i)) for i in range(8 * 366)])
+origenes = ([date(2016, 1, d) for d in range(1, 32)] + [date(2019, 1, d) for d in range(28, 32)] +
+            [date(2016, 2, 28), date(2016, 2, 29), date(2019, 2, 28), date(2015, 8, 31), date(2015, 12, 31)])
+casos, malos = 0, []
+for origen in origenes:
+    for unidad, factor in ((5, 1), (6, 12)):
+        if unidad == 6 and origen.day < 28:
+            continue
+        for hueco in (0, 1):
+            for tamaño in (1, 2):
+                p = plan(diario, initial_mode=tw.INITIAL_DATE, initial_date=segundos(origen - timedelta(days=1)),
+                         unit=tw.UNIT_TIME, time_unit=unidad, test_size=tamaño, gap=hueco, min_train=1,
+                         max_iterations=10 ** 5)
+                casos += 1
+                problema = p.error
+                for i, it in enumerate(p.iterations):
+                    desde = mas_meses(origen, factor * (i * tamaño + hueco))
+                    hasta = mas_meses(origen, factor * (i * tamaño + hueco + tamaño))
+                    if p.times[it.test_lo] != segundos(desde):
+                        problema = f"iteración {i + 1}: empieza el {p.label(it.test_lo)} en vez del {desde}"
+                        break
+                    if it.test_hi < p.n_rows and p.times[it.test_hi] != segundos(hasta):
+                        problema = f"iteración {i + 1}: acaba antes del {p.label(it.test_hi)} en vez del {hasta}"
+                        break
+                contiguos = all(b.test_lo == a.test_hi for a, b in zip(p.iterations, p.iterations[1:]))
+                if problema or not contiguos or p.unused_counts()["between"]:
+                    malos.append((origen, "meses" if unidad == 5 else "años", hueco, tamaño,
+                                  problema or "días sin evaluar entre tests"))
+check(not malos, f"calendario: {casos} casos con origen en los días 1 a 31 y el 29 de febrero, en meses y años, "
+                 f"con y sin hueco: tests contiguos y en su fecha {malos[:3]}")
+p = plan(diario, initial_mode=tw.INITIAL_DATE, initial_date=segundos(date(2020, 1, 30)), unit=tw.UNIT_TIME,
+         time_unit=5, test_size=1, min_train=1, max_iterations=10 ** 5)
+inicios = [p.label(it.test_lo) for it in p.iterations[:4]]
+check(inicios == ["2020-01-31", "2020-02-29", "2020-03-31", "2020-04-30"] and p.unused_counts()["between"] == 0,
+      f"origen el 31 de enero de 2020: los tests empiezan a fin de cada mes y no se pierde el 30 de marzo ({inicios})")
+p = plan(diario, initial_mode=tw.INITIAL_DATE, initial_date=segundos(date(2016, 2, 28)), unit=tw.UNIT_TIME,
+         time_unit=6, test_size=1, min_train=1, max_iterations=10 ** 5)
+check([p.label(it.test_lo) for it in p.iterations][:5] ==
+      ["2016-02-29", "2017-02-28", "2018-02-28", "2019-02-28", "2020-02-29"] and p.unused_counts()["between"] == 0,
+      "origen el 29 de febrero de 2016, en años: el 2020-02-28 se evalúa")
 
 con_huecos = serie(80, fechas=np.r_[ORIGEN + np.arange(40) * DIA, ORIGEN + (np.arange(40) + 100) * DIA])
 p = plan(con_huecos, initial_mode=tw.INITIAL_ROWS, initial_rows=20, unit=tw.UNIT_TIME, time_unit=3, test_size=10)
@@ -497,6 +556,22 @@ banco.esperar()
 html = open(ruta_html, encoding="utf-8").read()
 check("Ventana deslizante" in html and "Horizontes" in html and "Diebold-Mariano" in html and "Iteraciones" in html,
       "informe HTML: ventana, iteraciones, horizontes y Diebold-Mariano")
+informe = banco.w._analysis
+pareado = informe.pairs_of(st.TTEST_PAIRED)
+check(pareado and any("Diebold-Mariano" in w for w in pareado[0].warnings) and
+      not any("t corregido" in w for w in pareado[0].warnings), "t sin corregir: remite a Diebold-Mariano, no al t corregido")
+lecturas = [st.interpret(p, informe.names, informe.metric_label, informe.alpha) for p in informe.pairs_of(st.DIEBOLD_MARIANO)]
+ganadas = [t for t in lecturas if t.startswith("Hay evidencia")]
+check(ganadas and all(" mejor que " in t for t in ganadas) and len(set(ganadas)) == len(ganadas),
+      f"la interpretación de Diebold-Mariano nombra al rival ({ganadas[:1]})")
+leyenda = banco.w.chart_scores.figure(7, 4).axes[0].get_xlabel()
+check("puntos: iteraciones" in leyenda, f"la comparación de modelos habla de iteraciones ({leyenda!r})")
+check("no se aplican el t corregido" in banco.avisos() and "McNemar" in banco.avisos(),
+      "el widget dice que el t corregido y McNemar no se aplican a la ventana")
+check("no se aplican el t corregido" in html and "ρ = 0" in html, "el informe dice lo que no aplica y que el bayesiano usa ρ = 0")
+bayes = informe.pairs_of(st.BAYES)
+check(bayes and "ρ = 0" in bayes[0].assumption and "ρ = 0" in builder_explicaciones[st.BAYES],
+      "el t bayesiano explica que con ventana va sin correlación")
 ajustes = banco.w.settingsHandler.pack_data(banco.w)
 banco.cerrar()
 
