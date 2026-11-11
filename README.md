@@ -1,5 +1,9 @@
 # orange_gualbe_toolbox
 
+<p align="center">
+  <a href="https://doi.org/10.5281/zenodo.24144757"><img src="https://zenodo.org/badge/DOI/10.5281/zenodo.24144757.svg" alt="DOI"></a>
+</p>
+
 Utilidades visuales de ciencia de datos para Orange Data Mining.
 
 Add-on para [Orange Data Mining](https://orangedatamining.com/) con la categoría
@@ -150,13 +154,16 @@ debes publicarla con otro nombre de paquete y de proyecto (que no contenga esos
 nombres), indicar que es una versión modificada de `orange_gualbe_toolbox` y no
 presentarla como oficial ni como obra del autor.
 
-**Cómo citar.** Si usas el add-on en un trabajo académico, cítalo con los
-metadatos de [`CITATION.cff`](https://github.com/gualbe/orange_gualbe_toolbox/blob/main/CITATION.cff)
+**Cómo citar.** Cita el add-on con su DOI general de Zenodo,
+[10.5281/zenodo.24144757](https://doi.org/10.5281/zenodo.24144757), que remite siempre a la última versión (cada
+release tiene además su propio DOI en Zenodo). Si usas el add-on en un trabajo
+académico, puedes tomar los metadatos de
+[`CITATION.cff`](https://github.com/gualbe/orange_gualbe_toolbox/blob/main/CITATION.cff)
 (GitHub ofrece «Cite this repository» con el formato APA o BibTeX), por ejemplo:
 
 > Asencio Cortés, G. (2026). *orange_gualbe_toolbox: utilidades visuales de ciencia
-> de datos para Orange Data Mining* (versión 0.4.4) [Software].
-> https://github.com/gualbe/orange_gualbe_toolbox
+> de datos para Orange Data Mining* (versión 0.4.4) [Software]. Zenodo.
+> https://doi.org/10.5281/zenodo.24144757
 
 **Componentes de terceros.** El add-on depende de Orange Data Mining (GPL-3.0 o
 posterior, Bioinformatics Laboratory, Universidad de Liubliana), imbalanced-learn

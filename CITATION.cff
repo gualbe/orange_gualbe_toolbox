@@ -13,6 +13,7 @@ authors:
 version: "0.4.4"
 date-released: "2026-11-11"
 license: GPL-3.0-or-later
+doi: "10.5281/zenodo.24144757"
 repository-code: "https://github.com/gualbe/orange_gualbe_toolbox"
 url: "https://pypi.org/project/orange-gualbe-toolbox/"
 keywords:
