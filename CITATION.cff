@@ -10,7 +10,7 @@ abstract: >-
 authors:
   - family-names: "Asencio Cortés"
     given-names: "Gualberto"
-version: "0.4.3"
+version: "0.4.4"
 date-released: "2026-11-11"
 license: GPL-3.0-or-later
 repository-code: "https://github.com/gualbe/orange_gualbe_toolbox"

@@ -155,7 +155,7 @@ metadatos de [`CITATION.cff`](https://github.com/gualbe/orange_gualbe_toolbox/bl
 (GitHub ofrece «Cite this repository» con el formato APA o BibTeX), por ejemplo:
 
 > Asencio Cortés, G. (2026). *orange_gualbe_toolbox: utilidades visuales de ciencia
-> de datos para Orange Data Mining* (versión 0.4.3) [Software].
+> de datos para Orange Data Mining* (versión 0.4.4) [Software].
 > https://github.com/gualbe/orange_gualbe_toolbox
 
 **Componentes de terceros.** El add-on depende de Orange Data Mining (GPL-3.0 o

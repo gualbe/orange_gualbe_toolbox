@@ -3,6 +3,11 @@
 Cada versión se publica a la vez en GitHub (release `vX.Y.Z`) y en
 [PyPI](https://pypi.org/project/orange-gualbe-toolbox/).
 
+## 0.4.4 (2026-11-11)
+
+- Metadatos para Zenodo (`.zenodo.json`): cada release se archiva con DOI.
+- Sin cambios funcionales en los widgets.
+
 ## 0.4.3 (2026-11-11)
 
 - Autoría y licencia reforzadas: cabecera SPDX con el copyright de Gualberto Asencio Cortés en todos
