@@ -3,6 +3,19 @@
 Cada versión se publica a la vez en GitHub (release `vX.Y.Z`) y en
 [PyPI](https://pypi.org/project/orange-gualbe-toolbox/).
 
+## 0.4.3 (2026-11-11)
+
+- Autoría y licencia reforzadas: cabecera SPDX con el copyright de Gualberto Asencio Cortés en todos
+  los ficheros de código, fichero `NOTICE` con los términos adicionales del artículo 7 de la GPL-3
+  (atribución, origen de las versiones modificadas y nombres) y `CITATION.cff` para citar el add-on.
+- Reconocimiento del código adaptado de Orange Data Mining: Test & Score Pro (gestión de modelos y
+  muestreos, de Test & Score), la ventana deslizante (bucle de evaluación, de `Validation`) y File
+  Import (archivos recientes y arrastrar y soltar, de File; nombre de las descargas, de
+  `Orange.data.io`). Esas partes conservan el copyright y la licencia de Orange.
+- El paquete declara la licencia `GPL-3.0-or-later` y lleva `LICENSE` y `NOTICE`. La ayuda tiene una
+  página «Licencia y autoría» y el copyright en el pie, y el informe de Test & Score Pro indica la
+  autoría del add-on en la tabla de reproducibilidad.
+
 ## 0.4.2 (2026-11-11)
 
 - **Test & Score Pro** descarta al recibir los datos las filas sin valor en algún objetivo, antes de

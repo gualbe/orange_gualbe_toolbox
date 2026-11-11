@@ -121,6 +121,51 @@ ayuda, construye el paquete, lo sube a PyPI y adjunta los ficheros a la release.
 El workflow rechaza la publicación si la etiqueta no coincide con la versión de
 `pyproject.toml`.
 
-## Licencia
+## Licencia y autoría
 
-[GPL-3.0-or-later](https://github.com/gualbe/orange_gualbe_toolbox/blob/main/LICENSE).
+**Autor:** Gualberto Asencio Cortés · Copyright © 2026.
+
+`orange_gualbe_toolbox` es software libre bajo la licencia
+[GPL-3.0-or-later](https://github.com/gualbe/orange_gualbe_toolbox/blob/main/LICENSE)
+(GNU GPL versión 3 o posterior), la misma familia de licencia que Orange, del que
+el add-on importa y hereda clases y del que adapta algunas partes.
+
+Además, al amparo del artículo 7 de la GPL-3, el fichero
+[`NOTICE`](https://github.com/gualbe/orange_gualbe_toolbox/blob/main/NOTICE) añade
+unos términos adicionales que se aplican al material del autor:
+
+- **Atribución (7 b):** toda copia o versión modificada, completa o parcial, debe
+  conservar el aviso de copyright y la atribución de autoría a Gualberto Asencio
+  Cortés en los ficheros fuente, en la documentación y en `NOTICE`.
+- **Origen y versiones modificadas (7 c):** no se puede falsear el origen del
+  material; las versiones modificadas deben marcarse como distintas del original
+  y no pueden presentarse como el add-on original ni como publicadas o
+  respaldadas por su autor.
+- **Nombres (7 e):** no se concede ningún derecho sobre los nombres
+  «orange_gualbe», «Orange Gualbe» ni «Gualbe».
+
+**Forks y versiones derivadas.** Puedes estudiar, modificar y redistribuir el
+código en los términos de la GPL-3, pero si distribuyes una versión modificada
+debes publicarla con otro nombre de paquete y de proyecto (que no contenga esos
+nombres), indicar que es una versión modificada de `orange_gualbe_toolbox` y no
+presentarla como oficial ni como obra del autor.
+
+**Cómo citar.** Si usas el add-on en un trabajo académico, cítalo con los
+metadatos de [`CITATION.cff`](https://github.com/gualbe/orange_gualbe_toolbox/blob/main/CITATION.cff)
+(GitHub ofrece «Cite this repository» con el formato APA o BibTeX), por ejemplo:
+
+> Asencio Cortés, G. (2026). *orange_gualbe_toolbox: utilidades visuales de ciencia
+> de datos para Orange Data Mining* (versión 0.4.3) [Software].
+> https://github.com/gualbe/orange_gualbe_toolbox
+
+**Componentes de terceros.** El add-on depende de Orange Data Mining (GPL-3.0 o
+posterior, Bioinformatics Laboratory, Universidad de Liubliana), imbalanced-learn
+(MIT), scikit-learn, pandas, NumPy y SciPy (BSD-3-Clause), openpyxl (MIT), xlrd
+(BSD), baycomp (MIT) y Matplotlib (licencia de Matplotlib), que se instalan aparte.
+Algunas partes están adaptadas del código de Orange: la gestión de modelos y
+muestreos de Test & Score Pro (de Test & Score), el bucle de evaluación de la
+ventana deslizante (de `Validation`), la lista de archivos recientes y el arrastrar
+y soltar de File Import (de File) y la lectura del nombre de un archivo descargado
+(de `Orange.data.io`). Conservan el copyright y la licencia de Orange y los términos
+adicionales no se les aplican; [`NOTICE`](https://github.com/gualbe/orange_gualbe_toolbox/blob/main/NOTICE)
+detalla qué ficheros y qué partes son. Los iconos de los widgets son originales.

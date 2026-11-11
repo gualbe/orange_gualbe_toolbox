@@ -1,3 +1,9 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Gualberto Asencio Cortés
+# Part of orange_gualbe_toolbox. See the LICENSE and NOTICE files for details.
+# Portions adapted from Orange Data Mining (Orange/widgets/evaluate/owtestandscore.py),
+# Copyright (C) Bioinformatics Laboratory, University of Ljubljana, GPL-3.0-or-later.
+
 """Motor de Test & Score Pro (sin Qt): evaluación, puntuaciones y comparaciones.
 
 Se apoya en lo mismo que el Test & Score nativo (Orange.evaluation y sus scorers) para

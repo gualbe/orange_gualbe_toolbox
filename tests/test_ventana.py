@@ -1,3 +1,7 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Gualberto Asencio Cortés
+# Part of orange_gualbe_toolbox. See the LICENSE and NOTICE files for details.
+
 """Pruebas dirigidas de la validación por ventana deslizante de Test & Score Pro.
 
 Script ejecutable con el Python de Orange; sale con 1 si alguna comprobación falla. Cubre
@@ -568,6 +572,8 @@ leyenda = banco.w.chart_scores.figure(7, 4).axes[0].get_xlabel()
 check("puntos: iteraciones" in leyenda, f"la comparación de modelos habla de iteraciones ({leyenda!r})")
 check("no se aplican el t corregido" in banco.avisos() and "McNemar" in banco.avisos(),
       "el widget dice que el t corregido y McNemar no se aplican a la ventana")
+check("orange_gualbe_toolbox © 2026 Gualberto Asencio Cortés · GPL-3.0-or-later" in html,
+      "el informe HTML lleva la autoría del add-on en la reproducibilidad")
 check("no se aplican el t corregido" in html and "ρ = 0" in html, "el informe dice lo que no aplica y que el bayesiano usa ρ = 0")
 bayes = informe.pairs_of(st.BAYES)
 check(bayes and "ρ = 0" in bayes[0].assumption and "ρ = 0" in builder_explicaciones[st.BAYES],
@@ -607,6 +613,7 @@ def revisar_pdf(ruta, layout, etiqueta):
         textos = [documento.getAllText(p).text() for p in range(documento.pageCount())]
         check(documento.pageCount() == layout.pages, f"{etiqueta}: páginas coherentes")
         check(not any(re.search(r"\d,\s*\n\s*\d{2,}", texto) for texto in textos), f"{etiqueta}: ningún número partido")
+        check(any("Gualberto Asencio Cortés" in texto for texto in textos), f"{etiqueta}: autoría del add-on")
         documento.close()
 
 

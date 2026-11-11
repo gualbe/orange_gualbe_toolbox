@@ -1,3 +1,7 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Gualberto Asencio Cortés
+# Part of orange_gualbe_toolbox. See the LICENSE and NOTICE files for details.
+
 """Prueba sin interfaz gráfica de Test & Score Pro.
 
 Script ejecutable con el Python de Orange; sale con 1 si alguna comprobación falla.

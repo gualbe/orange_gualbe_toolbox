@@ -1,3 +1,7 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Gualberto Asencio Cortés
+# Part of orange_gualbe_toolbox. See the LICENSE and NOTICE files for details.
+
 """Maquetación en PDF del informe de Test & Score Pro.
 
 Se maqueta por bloques midiendo alturas y se dibuja con QPainter sobre QPdfWriter, porque

@@ -1,0 +1,123 @@
+orange_gualbe_toolbox
+Data science visual utilities add-on for Orange Data Mining
+https://github.com/gualbe/orange_gualbe_toolbox
+
+Copyright (C) 2026 Gualberto Asencio Cortés
+
+Author: Gualberto Asencio Cortés
+
+This program is free software: you can redistribute it and/or modify it
+under the terms of the GNU General Public License as published by the Free
+Software Foundation, either version 3 of the License, or (at your option) any
+later version (SPDX: GPL-3.0-or-later).
+
+This program is distributed in the hope that it will be useful, but WITHOUT
+ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+The full text of the license is in the LICENSE file distributed with this
+program, and at <https://www.gnu.org/licenses/>.
+
+
+Additional terms under section 7 of the GNU GPL v3
+--------------------------------------------------
+
+The following additional terms apply, as permitted by section 7 of the GNU
+General Public License version 3, to the material in this program for which
+Gualberto Asencio Cortés holds the copyright. They do not apply to the
+third-party components listed at the end of this file, including the
+portions adapted from Orange Data Mining.
+
+1. Preservation of author attributions (section 7(b)).
+   All copies and modified versions of this material, in whole or in part,
+   must preserve the copyright notice and the attribution of authorship to
+   Gualberto Asencio Cortés contained in the source files, in the
+   documentation and in this NOTICE file.
+
+2. Origin and marking of modified versions (section 7(c)).
+   The origin of this material must not be misrepresented. Modified versions
+   must be marked in reasonable ways as different from the original version,
+   and must not be presented as the original orange_gualbe_toolbox add-on or
+   as being published or endorsed by its author.
+
+3. Names (section 7(e)).
+   No rights are granted under trademark law, or otherwise, to use the names
+   "orange_gualbe", "Orange Gualbe" or "Gualbe". As a reasonable way of
+   marking a modified version as different from the original (section 7(c)),
+   anyone who distributes a modified version must use a package name and a
+   project name that differ from those of the original and do not contain
+   these names.
+
+These additional terms are part of the license of this material. As required
+by sections 4 and 5 of the GNU GPL v3, anyone who conveys this material or a
+modified version of it must keep intact this NOTICE file and the notices in
+the source files that refer to it.
+
+
+Third-party components
+----------------------
+
+This add-on runs on the following dependencies, which are installed
+separately and are not included in this package:
+
+- Orange Data Mining (Orange3), Copyright (C) Bioinformatics Laboratory,
+  Faculty of Computer and Information Science, University of Ljubljana.
+  Licensed under the GNU General Public License, version 3 or later.
+  <https://orangedatamining.com/>
+- imbalanced-learn, Copyright (C) the imbalanced-learn developers.
+  MIT License. <https://imbalanced-learn.org/>
+- scikit-learn (used through Orange and imbalanced-learn), Copyright (C) the
+  scikit-learn developers. BSD 3-Clause License. <https://scikit-learn.org/>
+- pandas, Copyright (C) the pandas development team. BSD 3-Clause License.
+  <https://pandas.pydata.org/>
+- NumPy, Copyright (C) NumPy Developers. BSD 3-Clause License.
+  <https://numpy.org/>
+- SciPy, Copyright (C) SciPy Developers. BSD 3-Clause License.
+  <https://scipy.org/>
+- openpyxl, Copyright (C) openpyxl contributors. MIT License.
+  <https://openpyxl.readthedocs.io/>
+- xlrd, Copyright (C) Chris Withers and contributors. BSD License.
+  <https://github.com/python-excel/xlrd>
+- baycomp, Copyright (C) Janez Demšar and contributors. MIT License.
+  <https://github.com/janezd/baycomp>
+- Matplotlib, Copyright (C) the Matplotlib Development Team. Matplotlib
+  License (based on the PSF License). <https://matplotlib.org/>
+
+Portions adapted from Orange Data Mining
+
+Some parts of this add-on are adapted from the source code of Orange Data
+Mining, Copyright (C) Bioinformatics Laboratory, Faculty of Computer and
+Information Science, University of Ljubljana, licensed under the GNU General
+Public License, version 3 or later. Those portions keep Orange's copyright and
+license; the additional terms above do not apply to them. Each affected file
+says so in its header:
+
+- orangecontrib/orange_gualbe_toolbox/widgets/owtestscorepro.py, adapted from
+  Orange/widgets/evaluate/owtestandscore.py: the handling of the multiple
+  Learner input (set, insert and remove learners keyed by input order), the
+  lists of resampling options (numbers of folds, repetitions and training
+  sizes), the names of the inputs, outputs and resampling settings, and the
+  structure of the resampling choices and their messages.
+- orangecontrib/orange_gualbe_toolbox/widgets/_tsp_engine.py, adapted from
+  Orange/widgets/evaluate/owtestandscore.py: the construction of the Orange
+  samplers for each resampling method and the check that training and test
+  data share the target variable.
+- orangecontrib/orange_gualbe_toolbox/widgets/_tsp_window.py, adapted from
+  Orange/evaluation/testing.py: WindowValidation.__call__ follows the
+  structure of Validation.__call__ (preparation of the folds, training and
+  testing loop and construction of the Results object).
+- orangecontrib/orange_gualbe_toolbox/widgets/owfileimport.py, adapted from
+  Orange/widgets/data/owfile.py: the list of recent files with Orange's
+  sample datasets, the search paths, the use of RecentPathsWComboMixin, the
+  update of relative paths when the workflow is saved and the handling of
+  dropped files and URLs.
+- orangecontrib/orange_gualbe_toolbox/widgets/_fileimport.py, adapted from
+  Orange/data/io.py: the regular expression that reads the file name from the
+  Content-Disposition header of a download.
+
+The rest of the code, including the readers of every file format (also ARFF),
+the statistical tests, the report, the sliding window validation, the widget
+icons and the documentation, is original work of the author. Other parts of
+the add-on only import or subclass Orange classes and functions (such as
+OWWidget, Validation, Results, results_merge or usable_scorers), which remain
+part of Orange.

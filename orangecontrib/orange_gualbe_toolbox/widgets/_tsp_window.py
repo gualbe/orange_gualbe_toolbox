@@ -1,3 +1,9 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Gualberto Asencio Cortés
+# Part of orange_gualbe_toolbox. See the LICENSE and NOTICE files for details.
+# Portions adapted from Orange Data Mining (Orange/evaluation/testing.py),
+# Copyright (C) Bioinformatics Laboratory, University of Ljubljana, GPL-3.0-or-later.
+
 """Validación por ventana deslizante para series temporales (sin Qt).
 
 Las filas se ordenan por una variable de tiempo (o se toman en su orden) y en cada iteración

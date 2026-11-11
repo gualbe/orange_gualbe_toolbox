@@ -1,3 +1,7 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Gualberto Asencio Cortés
+# Part of orange_gualbe_toolbox. See the LICENSE and NOTICE files for details.
+
 """Contenido del informe de Test & Score Pro y su versión HTML.
 
 `build_blocks` describe el informe como una lista de bloques; HTML y PDF (ver _tsp_pdf.py)
@@ -61,6 +65,7 @@ EXPLANATIONS = {
 
 MAX_ITERATION_MODELS = 6
 
+COPYRIGHT = "orange_gualbe_toolbox © 2026 Gualberto Asencio Cortés · GPL-3.0-or-later"
 SUMMARY_MODELS = 10
 MAX_LISTED_PAIRS = 6
 
@@ -238,6 +243,7 @@ def versions():
             out.append((package, importlib.metadata.version(package)))
         except importlib.metadata.PackageNotFoundError:
             out.append((package, "desconocida"))
+    out.append(("Autoría del add-on", COPYRIGHT))
     return out
 
 

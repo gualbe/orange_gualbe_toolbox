@@ -1,3 +1,7 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Gualberto Asencio Cortés
+# Part of orange_gualbe_toolbox. See the LICENSE and NOTICE files for details.
+
 """Gráficos de Test & Score Pro. Devuelven figuras de matplotlib sin pasar por pyplot.
 
 El widget y el informe usan exactamente las mismas figuras.

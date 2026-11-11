@@ -1,3 +1,9 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Gualberto Asencio Cortés
+# Part of orange_gualbe_toolbox. See the LICENSE and NOTICE files for details.
+# Portions adapted from Orange Data Mining (Orange/widgets/data/owfile.py),
+# Copyright (C) Bioinformatics Laboratory, University of Ljubljana, GPL-3.0-or-later.
+
 """Widget File Import: reúne lo mejor de File y CSV File Import.
 
 La lectura vive en _fileimport.py (sin Qt). Aquí solo hay interfaz, estado que se

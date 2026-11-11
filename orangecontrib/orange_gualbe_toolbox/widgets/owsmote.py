@@ -1,3 +1,7 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Gualberto Asencio Cortés
+# Part of orange_gualbe_toolbox. See the LICENSE and NOTICE files for details.
+
 """Widget SMOTE: balancea las clases generando instancias sintéticas.
 
 La lógica (elección del algoritmo, plan de muestreo y construcción de la
