@@ -499,4 +499,8 @@ banco.w.onDeleteWidget()
 check(not excepciones, "sin excepciones sin capturar:\n" + "\n".join(excepciones))
 
 print("\nFALLOS:", fallos)
-sys.exit(1 if fallos else 0)
+# Salida sin el desmontaje de Qt por el recolector de Python, que a veces acaba en SIGBUS (código 138)
+# aunque todas las comprobaciones hayan pasado.
+sys.stdout.flush()
+sys.stderr.flush()
+os._exit(1 if fallos else 0)

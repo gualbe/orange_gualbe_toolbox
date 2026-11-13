@@ -14,8 +14,10 @@ guardar los cambios con el workflow y repetirlos cuando vuelve a llegar la misma
 en una pila de deshacer con instantáneas de las columnas afectadas.
 """
 import copy
+import hashlib
 import math
 import re
+from datetime import timezone as dt_timezone
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
@@ -55,6 +57,51 @@ def _is_unknown_text(text):
     return text is None or str(text).strip() in ("", "?")
 
 
+_TZ_SUFFIX = re.compile(r"(Z|[+-]\d\d:?\d\d)$")
+_ISO_PLAIN = re.compile(r"^\d{4}-\d\d-\d\d([ T]\d\d:\d\d(:\d\d(\.\d+)?)?)?$")
+
+
+def _offset_seconds(tz):
+    """Desfase fijo de una zona horaria en segundos (0 para UTC o sin zona)."""
+    if tz is None or tz == dt_timezone.utc:
+        return 0.0
+    try:
+        offset = tz.utcoffset(None)
+    except Exception:  # pylint: disable=broad-except
+        return None
+    return None if offset is None else offset.total_seconds()
+
+
+def _format_numbers(values, var):
+    """Lo mismo que ContinuousVariable.str_val, en un bucle sin llamadas a métodos.
+
+    Con 300.000 valores distintos, llamar a str_val uno a uno tarda diez veces más.
+    """
+    fmt = getattr(var, "format_str", None) or getattr(var, "_format_str", "%g")
+    decimals = getattr(var, "_number_of_decimals", 3)
+    limit = getattr(var, "_max_round_diff", None)
+    if fmt == "%g" or limit is None:
+        return np.array(["?" if v != v else fmt % v for v in values.tolist()], dtype=object)
+    wide = f"{{:.{decimals + 2}f}}"
+    return np.array(["?" if v != v else (wide.format(v) if abs(round(v, decimals) - v) > limit else fmt % v)
+                     for v in values.tolist()], dtype=object)
+
+
+def _exact(text, value):
+    try:
+        return float(text) == value
+    except (TypeError, ValueError):
+        return False
+
+
+def full_numbers(values):
+    """Textos con toda la precisión (el más corto que reproduce el número), vectorizado."""
+    texts = np.asarray(values, dtype=float).astype(str).astype(object)
+    integral = np.array([t.endswith(".0") for t in texts], dtype=bool)
+    texts[integral] = np.array([t[:-2] for t in texts[integral]], dtype=object)
+    return texts
+
+
 def _parse_number(text):
     cleaned = str(text).strip().replace("−", "-")
     if "," in cleaned and "." not in cleaned:
@@ -77,6 +124,7 @@ class Column:
     edited: Optional[np.ndarray] = None
     have_date: int = 1
     have_time: int = 0
+    tz: object = None   # zona horaria de una columna de fecha (None = UTC)
     _out_var: object = None
 
     def definition_changed(self):
@@ -114,7 +162,10 @@ class Column:
         if self.kind == NUMERIC:
             return ContinuousVariable(self.name)
         if self.kind == DATETIME:
-            return TimeVariable(self.name, have_date=self.have_date, have_time=self.have_time)
+            var = TimeVariable(self.name, have_date=self.have_date, have_time=self.have_time)
+            if self.tz is not None:
+                var.timezone = self.tz
+            return var
         if self.kind == CATEGORICAL:
             return DiscreteVariable(self.name, values=tuple(self.categories))
         return StringVariable(self.name)
@@ -148,11 +199,46 @@ class Column:
             return labels[codes]
         if not len(values):
             return np.array([], dtype=object)
+        if self.kind == DATETIME:
+            fast = _format_times(values, self.have_date, self.have_time, self.tz)
+            if fast is not None:
+                return fast
         unique, inverse = np.unique(values, return_inverse=True)
         var = self.format_var()
-        formatter = var.repr_val if self.kind == DATETIME else var.str_val
-        formatted = np.array(["?" if np.isnan(v) else formatter(v) for v in unique], dtype=object)
+        if self.kind == NUMERIC:
+            formatted = _format_numbers(unique, var)
+        else:
+            formatted = np.array(["?" if np.isnan(v) else var.repr_val(v) for v in unique], dtype=object)
         return formatted[inverse.ravel()]
+
+    def edit_text(self, row):
+        """Texto para editar una celda: el que se ve si es exacto; si redondea, el valor completo."""
+        if self.kind == NUMERIC:
+            value = self.values[row]
+            return "" if np.isnan(value) else self.edit_texts(np.array([row]))[0]
+        text = self.text(row)
+        return "" if text == "?" and self.kind != STRING else text
+
+    def edit_texts(self, rows=None):
+        """Como `texts`, pero sin perder precisión: en las numéricas, el texto visible si reproduce
+        exactamente el valor («5.0») y, si lo redondea («3.14159»), el valor completo."""
+        shown = self.texts(rows)
+        if self.kind != NUMERIC:
+            return shown
+        values = self.values if rows is None else self.values[rows]
+        known = ~np.isnan(values)
+        if not known.any():
+            return shown
+        texts = shown.copy()
+        unique, inverse = np.unique(values[known], return_inverse=True)
+        shown_unique = np.empty(len(unique), dtype=object)
+        shown_unique[inverse.ravel()] = shown[known]
+        exact = np.array([_exact(t, v) for t, v in zip(shown_unique, unique)], dtype=bool)
+        if not exact.all():
+            fixed = shown_unique.copy()
+            fixed[~exact] = full_numbers(unique[~exact])
+            texts[known] = fixed[inverse.ravel()]
+        return texts
 
     def parse(self, text, extend=True):
         """Valor interno de un texto. Lanza OperationError si no es válido para el tipo."""
@@ -167,11 +253,12 @@ class Column:
             except ValueError:
                 raise OperationError(f"«{text}» no es un número válido para la columna numérica «{self.name}».") from None
         if self.kind == DATETIME:
-            try:
-                return float(TimeVariable("t").parse(text))
-            except Exception:  # pylint: disable=broad-except
+            value, has_date, has_time = self.parse_time(text)
+            if value is None:
                 raise OperationError(f"«{text}» no es una fecha u hora válida para «{self.name}» "
-                                     "(usa por ejemplo 2026-11-13 o 2026-11-13 09:30).") from None
+                                     "(usa por ejemplo 2026-11-13 o 2026-11-13 09:30).")
+            self.widen_time(has_date, has_time)
+            return value
         if text in self.categories:
             return float(self.categories.index(text))
         if not extend:
@@ -181,6 +268,27 @@ class Column:
         self.categories.append(text)
         self.definition_changed()
         return float(len(self.categories) - 1)
+
+    def parse_time(self, text):
+        """Fecha u hora en segundos. Sin zona escrita, se toma la de la columna."""
+        parser = TimeVariable("t", have_date=0, have_time=0)
+        try:
+            value = float(parser.parse(text))
+        except Exception:  # pylint: disable=broad-except
+            return None, 0, 0
+        if not _TZ_SUFFIX.search(text.strip()):
+            offset = _offset_seconds(self.tz)
+            value -= offset or 0.0
+        return value, int(parser.have_date), int(parser.have_time)
+
+    def widen_time(self, has_date, has_time):
+        """Si se escribe una hora en una columna solo de fechas (o al revés), se muestra."""
+        if (has_time and not self.have_time) or (has_date and not self.have_date):
+            self.have_time = int(self.have_time or has_time)
+            self.have_date = int(self.have_date or has_date)
+            if self.var is not None:
+                self.tz = self.tz if self.tz is not None else getattr(self.var, "_timezone", None)
+            self.definition_changed()
 
     def mark_edited(self, rows):
         if self.edited is None:
@@ -217,6 +325,29 @@ def _signature(table):
     return [len(table)] + [[var.name, type(var).__name__] for var in domain.variables + domain.metas]
 
 
+FINGERPRINT_ROWS = 2000
+
+
+def fingerprint(table):
+    """Huella barata del contenido: una muestra de filas repartidas por toda la tabla.
+
+    No usa los ids, que Orange cambia cada vez que vuelve a leer un archivo.
+    """
+    n = len(table)
+    if not n:
+        return "vacía"
+    rows = np.unique(np.linspace(0, n - 1, min(n, FINGERPRINT_ROWS)).round().astype(int))
+    digest = hashlib.sha1()
+    for block in (table.X, table.Y, table.metas):
+        part = block[rows] if not sp.issparse(block) else block[rows].toarray()
+        part = np.asarray(part)
+        if part.dtype == object:
+            digest.update("\x1f".join(map(str, part.ravel().tolist())).encode("utf-8", "replace"))
+        else:
+            digest.update(np.ascontiguousarray(part, dtype=float).tobytes())
+    return digest.hexdigest()[:16]
+
+
 @dataclass
 class Snapshot:
     columns: Dict[str, Column]
@@ -230,6 +361,7 @@ class TableState:
         self.source = table
         self.name = name or getattr(table, "name", "") or "Datos"
         self.signature = _signature(table)
+        self.fingerprint = fingerprint(table)
         self.notes = []
         self.columns: List[Column] = []
         self._load(table)
@@ -273,20 +405,27 @@ class TableState:
                                 list(var.values) if kind == CATEGORICAL else [], var)
                 if kind == DATETIME:
                     column.have_date, column.have_time = int(var.have_date), int(var.have_time)
+                    zone = getattr(var, "_timezone", None)
+                    column.tz = zone if zone not in (None, "different timezones") else None
                 self.columns.append(column)
 
-    def column_texts(self, cid):
-        """Textos de todas las filas de una columna, guardados hasta el siguiente cambio."""
-        cached = self._texts.get(cid)
+    def column_texts(self, cid, full=False):
+        """Textos de todas las filas de una columna, guardados hasta el siguiente cambio.
+
+        Con `full`, las numéricas van con toda su precisión (para buscar y reemplazar).
+        """
+        key = (cid, full)
+        cached = self._texts.get(key)
         if cached is None or cached[0] != self.version:
-            cached = (self.version, self.column(cid).texts())
-            self._texts[cid] = cached
+            column = self.column(cid)
+            cached = (self.version, column.edit_texts() if full else column.texts())
+            self._texts[key] = cached
         return cached[1]
 
     def _texts_of(self, column, rows):
         if rows is None or len(rows) == self.n_rows:
-            return self.column_texts(column.cid)
-        return column.texts(rows)
+            return self.column_texts(column.cid, full=True)
+        return column.edit_texts(rows)
 
     def column(self, cid):
         for column in self.columns:
@@ -390,6 +529,8 @@ class TableState:
     def edit(self, row, cid, text):
         """Cambia una celda (`row` es la fila original). Lanza OperationError si no es válida."""
         column = self.column(cid)
+        if text is not None and str(text) in (column.edit_text(row), column.text(row)):
+            return False  # se ha abierto y confirmado el editor sin cambiar nada (sin redondear)
         before = self._begin([cid])
         try:
             value = column.parse(text)
@@ -413,7 +554,7 @@ class TableState:
         return True
 
     def _scope(self, rows, cids):
-        rows = np.arange(self.n_rows) if rows is None else np.asarray(sorted(set(int(r) for r in rows)), dtype=int)
+        rows = np.arange(self.n_rows) if rows is None else np.unique(_expand_rows(rows))
         columns = self.columns if cids is None else [self.column(c) for c in cids]
         return rows, columns
 
@@ -466,12 +607,12 @@ class TableState:
                 if bad:
                     rejected[column.name] = bad
                 continue
-            texts = column.texts(rows)
+            # En las numéricas se reemplaza sobre el valor completo, nunca sobre el texto redondeado.
+            texts = self._texts_of(column, rows)
             known = ~column.unknown_mask(rows)
-            new_values = []
-            for i, text in enumerate(texts):
-                if not known[i]:
-                    continue
+            positions, new_texts, counts = [], [], []
+            for i in np.flatnonzero(known):
+                text = texts[i]
                 try:
                     new_text, count = compiled.subn(replacement_fn, text)
                 except (re.error, IndexError) as error:
@@ -479,20 +620,30 @@ class TableState:
                     self.version -= 1
                     raise OperationError(f"El reemplazo no es válido: {error}.") from None
                 if count and new_text != text:
-                    new_values.append((i, new_text, count))
-            done = []
-            for i, new_text, count in new_values:
-                try:
-                    value = column.parse(new_text)
-                except OperationError:
-                    rejected[column.name] = rejected.get(column.name, 0) + 1
-                    continue
-                column.values[rows[i]] = value
-                done.append(rows[i])
-                total += count
-            if done:
-                column.mark_edited(done)
-                changed += len(done)
+                    positions.append(i)
+                    new_texts.append(new_text)
+                    counts.append(count)
+            if not positions:
+                continue
+            positions = np.asarray(positions, dtype=int)
+            counts = np.asarray(counts, dtype=int)
+            values, valid = _parse_many(column, np.asarray(new_texts, dtype=object))
+            bad = int((~valid).sum())
+            if bad:
+                rejected[column.name] = bad
+            targets = rows[positions]
+            if column.kind == STRING:
+                differs = valid
+            else:
+                old = column.values[targets]
+                same = (old == values) | (np.isnan(old) & np.isnan(values))
+                differs = valid & ~same  # si el número no cambia, la celda no se toca
+            if differs.any():
+                column.values[targets[differs]] = values[differs] if column.kind != STRING else \
+                    np.asarray(values, dtype=object)[differs]
+                column.mark_edited(targets[differs])
+                changed += int(differs.sum())
+                total += int(counts[differs].sum())
         if not changed:
             self._restore(before)
             self.version -= 1
@@ -523,6 +674,11 @@ class TableState:
                 self.version -= 1
                 raise OperationError(f"El reemplazo no es válido: {error}.") from None
             if count and new_label != label:
+                if not _is_unknown_text(new_label) and new_label.strip() not in column.categories \
+                        and len(column.categories) + len(renamed) >= MAX_CATEGORIES:
+                    self._restore(before)
+                    self.version -= 1
+                    raise OperationError(f"«{column.name}» superaría {MAX_CATEGORIES} valores distintos.")
                 renamed[code] = (new_label, count)
         if not renamed:
             return 0, 0, 0
@@ -548,7 +704,9 @@ class TableState:
             if outside.any():
                 new_values[outside] = add(label)  # fuera del ámbito sigue igual
             inside = mask & in_scope
-            new_values[inside] = add(renamed[code][0])  # el nuevo ocupa el sitio del antiguo
+            new_label = renamed[code][0]
+            # «» o «?» es un valor desconocido, como al editar; si no, ocupa el sitio del antiguo.
+            new_values[inside] = np.nan if _is_unknown_text(new_label) else add(new_label.strip())
             cells += int(inside.sum())
             total += int(inside.sum()) * renamed[code][1]
         column.values = new_values
@@ -567,6 +725,24 @@ class TableState:
         if not targets:
             return 0, skipped
         before = self._begin([c.cid for c in targets])
+        try:
+            changed = self._affix_columns(targets, rows, prefix, suffix)
+        except OperationError:
+            self._restore(before)  # p. ej. al superar el máximo de valores: la columna queda como estaba
+            self.version -= 1
+            raise
+        if not changed:
+            self._restore(before)
+            self.version -= 1
+            return 0, skipped
+        self._commit(before, dict(op="affix", prefix=prefix, suffix=suffix,
+                                  rows=None if rows is None else _rows_or_none(rows, self.n_rows),
+                                  cols=None if cids is None else list(cids)),
+                     "Añadir prefijo y sufijo")
+        return changed, skipped
+
+    @staticmethod
+    def _affix_columns(targets, rows, prefix, suffix):
         changed = 0
         for column in targets:
             known = rows[~column.unknown_mask(rows)]
@@ -585,15 +761,7 @@ class TableState:
                 column.definition_changed()
             column.mark_edited(known)
             changed += len(known)
-        if not changed:
-            self._restore(before)
-            self.version -= 1
-            return 0, skipped
-        self._commit(before, dict(op="affix", prefix=prefix, suffix=suffix,
-                                  rows=None if rows is None else _rows_or_none(rows, self.n_rows),
-                                  cols=None if cids is None else list(cids)),
-                     "Añadir prefijo y sufijo")
-        return changed, skipped
+        return changed
 
     def rename(self, cid, new_name):
         column = self.column(cid)
@@ -609,52 +777,84 @@ class TableState:
         self._commit(before, dict(op="rename", col=cid, name=new_name), f"Renombrar «{before.names[cid]}»")
         return True
 
-    def set_role(self, cid, role):
-        column = self.column(cid)
+    def set_role(self, cids, role):
+        """Cambia el rol de una o varias columnas. Es atómico: si una no puede, no cambia ninguna."""
+        cids = [cids] if isinstance(cids, str) else list(cids)
         if role not in ROLES:
             raise OperationError(f"Rol desconocido: {role}.")
-        if role == column.role:
+        columns = [self.column(cid) for cid in cids]
+        texts = [c.name for c in columns if c.kind == STRING and role != META]
+        if texts:
+            raise OperationError(f"{_names(texts)} {'es' if len(texts) == 1 else 'son'} de texto: en Orange solo "
+                                 "puede ser meta. Conviértela antes a categórica o numérica. No se ha cambiado "
+                                 "ningún rol.")
+        changing = [c for c in columns if c.role != role]
+        if not changing:
             return False
-        if column.kind == STRING and role != META:
-            raise OperationError(f"«{column.name}» es de texto: en Orange solo puede ser meta. "
-                                 "Conviértela antes a categórica o numérica.")
-        before = self._begin([cid])
-        column.role = role
-        self._commit(before, dict(op="role", col=cid, role=role),
-                     f"«{column.name}» como {ROLE_NAMES[role].lower()}")
+        before = self._begin([c.cid for c in changing])
+        for column in changing:
+            column.role = role
+        entry = dict(op="role", role=role)
+        entry.update(dict(col=changing[0].cid) if len(changing) == 1 else dict(cols=[c.cid for c in changing]))
+        self._commit(before, entry, f"{_names([c.name for c in changing])} como {ROLE_NAMES[role].lower()}")
         return True
 
-    def convert(self, cid, kind):
-        """Cambia el tipo. Devuelve cuántos valores conocidos pasan a desconocidos."""
-        column = self.column(cid)
+    def convert(self, cids, kind):
+        """Cambia el tipo de una o varias columnas, de forma atómica.
+
+        Con una columna devuelve cuántos valores conocidos pasan a desconocidos; con varias, un
+        diccionario {nombre: perdidos} solo con las que pierden alguno.
+        """
+        single = isinstance(cids, str)
+        cids = [cids] if single else list(cids)
         if kind not in KINDS:
             raise OperationError(f"Tipo desconocido: {kind}.")
-        if kind == column.kind:
-            return 0
-        before = self._begin([cid])
+        changing = [self.column(cid) for cid in cids if self.column(cid).kind != kind]
+        if not changing:
+            return 0 if single else {}
+        before = self._begin([c.cid for c in changing])
+        lost = {}
+        try:
+            for column in changing:
+                count = self._convert_column(column, kind)
+                if count:
+                    lost[column.name] = count
+        except OperationError:
+            self._restore(before)  # ninguna columna a medias
+            self.version -= 1
+            raise
+        entry = dict(op="convert", kind=kind)
+        entry.update(dict(col=changing[0].cid) if len(changing) == 1 else dict(cols=[c.cid for c in changing]))
+        self._commit(before, entry, f"{_names([c.name for c in changing])} a {KIND_NAMES[kind].lower()}")
+        if single:
+            return sum(lost.values())
+        return lost
+
+    @staticmethod
+    def _convert_column(column, kind):
         texts = column.texts()
         known_before = ~column.unknown_mask()
         old_kind = column.kind
         if kind == STRING:
             column.values = np.where(known_before, texts, "").astype(object)
             column.categories = []
-            if column.role != META:
-                column.role = META
+            column.role = META
         elif kind == CATEGORICAL:
+            usable = known_before & np.array([not _is_unknown_text(t) for t in texts], dtype=bool)
             if old_kind == NUMERIC:
-                unique = np.unique(column.values[known_before])
+                unique = np.unique(column.values[usable])
                 labels = [column.format_var().str_val(v) for v in unique]
+                label_of = dict(zip(unique.tolist(), labels))
+                keys = [label_of[v] if k else None for v, k in zip(column.values.tolist(), usable)]
             else:
-                labels = sorted({str(t) for t in texts[known_before]}, key=_natural_key)
+                keys = [str(t).strip() if k else None for t, k in zip(texts, usable)]
+                labels = sorted({k for k in keys if k is not None}, key=_natural_key)
             labels = list(dict.fromkeys(labels))
             if len(labels) > MAX_CATEGORIES:
-                self._restore(before)
-                self.version -= 1
                 raise OperationError(f"«{column.name}» tiene {len(labels)} valores distintos: demasiados para una "
                                      f"columna categórica (máximo {MAX_CATEGORIES}).")
             index = {label: i for i, label in enumerate(labels)}
-            column.values = np.array([index[str(t)] if k else np.nan for t, k in zip(texts, known_before)],
-                                     dtype=float)
+            column.values = np.array([np.nan if k is None else index[k] for k in keys], dtype=float)
             column.categories = labels
         elif kind == NUMERIC:
             if old_kind == DATETIME:
@@ -665,18 +865,16 @@ class TableState:
         else:  # DATETIME
             if old_kind == NUMERIC:
                 column.values = column.values.astype(float)  # se toman como segundos desde 1970
+                column.have_date, column.have_time = 1, 1
             else:
-                parser = TimeVariable("t")
-                column.values = _parse_unique(texts, known_before, parser.parse)
-                column.have_date = int(parser.have_date) or 1
-                column.have_time = int(parser.have_time)
+                values, has_date, has_time = _parse_times(texts, known_before, column.tz)
+                column.values = values
+                column.have_date = int(has_date) or (0 if has_time else 1)
+                column.have_time = int(has_time)
             column.categories = []
         column.kind = kind
         column.definition_changed()
-        lost = int((known_before & column.unknown_mask()).sum())
-        self._commit(before, dict(op="convert", col=cid, kind=kind),
-                     f"«{column.name}» a {KIND_NAMES[kind].lower()}")
-        return lost
+        return int((known_before & column.unknown_mask()).sum())
 
     # --------------------------------------------------------- registro ----
 
@@ -698,9 +896,9 @@ class TableState:
                 elif kind == "rename":
                     self.rename(entry["col"], entry["name"])
                 elif kind == "role":
-                    self.set_role(entry["col"], entry["role"])
+                    self.set_role(entry.get("cols") or entry["col"], entry["role"])
                 elif kind == "convert":
-                    self.convert(entry["col"], entry["kind"])
+                    self.convert(entry.get("cols") or entry["col"], entry["kind"])
             except (OperationError, KeyError, StopIteration, TypeError, ValueError) as error:
                 problems.append(f"{entry.get('op', '?')}: {error}")
         for cid, descending in sort_keys:
@@ -708,7 +906,7 @@ class TableState:
                 self.sort(cid, descending)
             except OperationError as error:
                 problems.append(f"orden: {error}")
-        self._undo.clear()
+        # Los pasos repetidos quedan en la pila: se pueden deshacer igual que en la sesión original.
         self._redo.clear()
         return problems
 
@@ -747,9 +945,31 @@ class TableState:
         return table
 
 
+def _names(names):
+    shown = ", ".join(f"«{n}»" for n in names[:4]) + ("…" if len(names) > 4 else "")
+    return shown
+
+
 def _rows_or_none(rows, n_rows):
-    rows = [int(r) for r in rows]
-    return None if len(rows) == n_rows else rows
+    """Filas para el registro, comprimidas en tramos [inicio, fin] (None si son todas)."""
+    rows = np.unique(np.asarray(rows, dtype=int))
+    if len(rows) == n_rows:
+        return None
+    if not len(rows):
+        return {"ranges": []}
+    breaks = np.flatnonzero(np.diff(rows) > 1)
+    starts, stops = rows[np.r_[0, breaks + 1]], rows[np.r_[breaks, len(rows) - 1]]
+    return {"ranges": [[int(a), int(b)] for a, b in zip(starts, stops)]}
+
+
+def _expand_rows(rows):
+    """Admite una lista de filas, un vector o los tramos guardados en el registro."""
+    if isinstance(rows, dict):
+        ranges = rows.get("ranges", [])
+        if not ranges:
+            return np.arange(0, dtype=int)
+        return np.concatenate([np.arange(a, b + 1) for a, b in ranges]).astype(int)
+    return np.asarray(rows, dtype=int).ravel()
 
 
 def _drop_unused(categories, values):
@@ -783,3 +1003,89 @@ def _parse_unique(texts, known, parser):
             pass
     values[known] = parsed[inverse.ravel()]
     return values
+
+
+def _parse_many(column, texts):
+    """Analiza muchos textos de una vez según el tipo. Devuelve (valores, válidos)."""
+    n = len(texts)
+    if column.kind == STRING:
+        return np.array(["" if t is None else str(t) for t in texts], dtype=object), np.ones(n, dtype=bool)
+    unknown = np.array([_is_unknown_text(t) for t in texts], dtype=bool)
+    values = np.full(n, np.nan)
+    valid = unknown.copy()
+    rest = ~unknown
+    if not rest.any():
+        return values, valid
+    if column.kind == NUMERIC:
+        parsed = _parse_unique(texts, rest, _parse_number)
+    else:
+        parsed, has_date, has_time = _parse_times(texts, rest, column.tz)
+        column.widen_time(has_date, has_time)
+    ok = rest & ~np.isnan(parsed)
+    values[ok] = parsed[ok]
+    valid |= ok
+    return values, valid
+
+
+def _format_times(values, have_date, have_time, tz):
+    """Fechas como las escribe Orange, vectorizado. None si hay que hacerlo valor a valor."""
+    if tz is not None and tz != dt_timezone.utc:
+        return None
+    if not have_date and not have_time:
+        return None
+    values = np.asarray(values, dtype=float)
+    known = ~np.isnan(values)
+    finite = values[known]
+    if len(finite) and (np.any(finite != np.round(finite)) or finite.min() < -6e10 or finite.max() > 2.5e11):
+        return None  # fracciones de segundo o fechas fuera de los años 1-9999
+    texts = np.full(len(values), "?", dtype=object)
+    if known.any():
+        stamps = np.datetime_as_string(finite.astype("int64").astype("datetime64[s]"), unit="s")
+        if have_date and not have_time:
+            stamps = np.array([t[:10] for t in stamps], dtype=object)
+        elif have_time and not have_date:
+            stamps = np.array([t[11:] for t in stamps], dtype=object)
+        else:
+            stamps = np.array([t.replace("T", " ") for t in stamps], dtype=object)
+        texts[known] = stamps
+    return texts
+
+
+def _parse_times(texts, mask, tz):
+    """Textos de fecha a segundos: los ISO sencillos con pandas y el resto como Orange.
+
+    Sin zona escrita se toma la de la columna. Devuelve (valores, ¿alguno con fecha?, ¿con hora?).
+    """
+    values = np.full(len(texts), np.nan)
+    indices = np.flatnonzero(mask)
+    if not len(indices):
+        return values, 0, 0
+    subset = np.array([str(t).strip() for t in texts[indices]], dtype=object)
+    plain = np.array([bool(_ISO_PLAIN.match(t)) for t in subset], dtype=bool)
+    has_date = has_time = 0
+    if plain.any():
+        import pandas as pd
+        parsed = pd.to_datetime(pd.Series(subset[plain]), format="ISO8601", errors="coerce")
+        seconds = parsed.to_numpy(dtype="datetime64[ns]").astype("int64") / 1e9
+        seconds[parsed.isna().to_numpy()] = np.nan
+        offset = _offset_seconds(tz) or 0.0
+        values[indices[plain]] = seconds - offset
+        has_date = 1
+        has_time = int(any(len(t) > 10 for t in subset[plain]))
+        plain[plain] = ~np.isnan(seconds)  # los que pandas no entiende pasan al análisis de Orange
+    others = np.flatnonzero(~plain)
+    if len(others):
+        unique, inverse = np.unique(subset[others].astype(str), return_inverse=True)
+        parsed = np.full(len(unique), np.nan)
+        offset = _offset_seconds(tz) or 0.0
+        for i, text in enumerate(unique):
+            parser = TimeVariable("t", have_date=0, have_time=0)
+            try:
+                value = float(parser.parse(text))
+            except Exception:  # pylint: disable=broad-except
+                continue
+            parsed[i] = value - (0.0 if _TZ_SUFFIX.search(text) else offset)
+            has_date |= int(parser.have_date)
+            has_time |= int(parser.have_time)
+        values[indices[others]] = parsed[inverse.ravel()]
+    return values, has_date, has_time

@@ -130,8 +130,9 @@ Parte del **Data Table** de Orange y lo convierte en un editor de tablas:
   editadas resaltadas, colores propios de fondo y de texto, estadísticas de cada columna en su
   cabecera y copiar al portapapeles.
 - Los cambios se **guardan con el workflow** y se repiten mientras la entrada no cambie.
-- Pensado para tablas grandes: con 300.000 filas, abrir, ordenar o reemplazar en una columna
-  tardan menos de un segundo, y buscar en toda la tabla, un par de segundos.
+- Pensado para tablas grandes: con 300.000 filas, abrir, ordenar, convertir o reemplazar en una
+  columna tardan menos de un segundo, y buscar en toda la tabla, unos 2 segundos la primera vez.
+- Solo reenvía las salidas que cambian, para no recalcular lo que cuelga del nodo.
 
 ## Ayuda de los widgets
 
@@ -190,7 +191,7 @@ académico, puedes tomar los metadatos de
 (GitHub ofrece «Cite this repository» con el formato APA o BibTeX), por ejemplo:
 
 > Asencio Cortés, G. (2026). *orange_gualbe_toolbox: utilidades visuales de ciencia
-> de datos para Orange Data Mining* (versión 0.5.0) [Software]. Zenodo.
+> de datos para Orange Data Mining* (versión 0.5.1) [Software]. Zenodo.
 > https://doi.org/10.5281/zenodo.24144757
 
 **Componentes de terceros.** El add-on depende de Orange Data Mining (GPL-3.0 o

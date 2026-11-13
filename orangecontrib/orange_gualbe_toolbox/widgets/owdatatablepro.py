@@ -68,6 +68,14 @@ class StateModel(QAbstractTableModel):
         self._bar_cache = {}
         self.endResetModel()
 
+    def repaint(self):
+        """Los datos han cambiado pero no las filas: repintar sin reiniciar el modelo."""
+        self._bar_cache = {}
+        if self.rowCount() and self.columnCount():
+            self.dataChanged.emit(self.index(0, 0), self.index(self.rowCount() - 1, self.columnCount() - 1))
+        if self.columnCount():
+            self.headerDataChanged.emit(Qt.Horizontal, 0, self.columnCount() - 1)
+
     def rowCount(self, parent=QModelIndex()):
         return 0 if parent.isValid() or self.state is None else len(self.rows)
 
@@ -87,8 +95,7 @@ class StateModel(QAbstractTableModel):
         if role == Qt.DisplayRole:
             return column.text(row)
         if role == Qt.EditRole:
-            text = column.text(row)
-            return "" if text == "?" and column.kind != engine.STRING else text
+            return column.edit_text(row)  # con toda la precisión: confirmar sin cambios no redondea
         if role == Qt.TextAlignmentRole:
             if column.kind in (engine.NUMERIC, engine.DATETIME):
                 return int(Qt.AlignRight | Qt.AlignVCenter)
@@ -223,6 +230,9 @@ class Page(QWidget):
         self.matches = []
         self.match_index = -1
         self._output = None
+        self._selected = None
+        self._ranges = None
+        self.saved_key = None   # clave con la que se guardaron sus cambios en el workflow
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         self.empty_label = QLabel("Sin datos en esta entrada.", self)
@@ -251,6 +261,8 @@ class Page(QWidget):
         header.setContextMenuPolicy(Qt.CustomContextMenu)
         header.customContextMenuRequested.connect(lambda pos: widget.header_menu(self, pos))
         layout.addWidget(self.view)
+        self.view.selectionModel().selectionChanged.connect(self._selection_moved)
+        self.model.modelReset.connect(self._selection_moved)
         self.model.edit_failed.connect(widget.show_edit_error)
         self.model.edited.connect(lambda: widget.changed(self))
         self._last_sort = (None, None)
@@ -299,12 +311,20 @@ class Page(QWidget):
         mask = self._filter_cache[1]
         return self.state.order[mask[self.state.order]]
 
-    def refresh(self, keep_matches=False):
-        """Vuelve a leer el estado sin perder la celda actual ni la selección."""
+    def refresh(self, keep_matches=False, layout=False):
+        """Vuelve a leer el estado sin perder la celda actual ni la selección.
+
+        Si solo han cambiado datos (no el orden ni las filas visibles), basta con repintar: el
+        modelo no se reinicia y la selección se conserva sola, aunque tenga miles de rangos.
+        """
         if not keep_matches:
             self.matches, self.match_index = [], -1
             self.model.matches, self.model.current = {}, None
         self._output = None
+        self._selected = None
+        if not layout and not self.filter_text and len(self.model.rows) == (self.state.n_rows if self.state else 0):
+            self.model.repaint()
+            return
         current, selected = self._remember()
         self.model.reset()
         self._recall(current, selected)
@@ -326,15 +346,19 @@ class Page(QWidget):
         position[self.model.rows] = np.arange(len(self.model.rows))
         selection = QItemSelection()
         last = self.model.columnCount() - 1
-        for orig_rows, left, right in selected:
-            rows = position[orig_rows]
+        groups = {}
+        for orig_rows, left, right in selected:  # una sola pasada por grupo de columnas
+            if left <= last:
+                groups.setdefault((left, min(right, last)), []).append(orig_rows)
+        for (left, right), parts in groups.items():
+            rows = position[np.concatenate(parts)]
             rows = np.unique(rows[rows >= 0])
-            if not len(rows) or left > last:
+            if not len(rows):
                 continue
             breaks = np.flatnonzero(np.diff(rows) > 1)
-            for start, stop in zip(np.r_[0, breaks + 1], np.r_[breaks, len(rows) - 1]):
-                selection.select(self.model.index(int(rows[start]), left),
-                                 self.model.index(int(rows[stop]), min(right, last)))
+            starts, stops = rows[np.r_[0, breaks + 1]], rows[np.r_[breaks, len(rows) - 1]]
+            for start, stop in zip(starts.tolist(), stops.tolist()):
+                selection.select(self.model.index(start, left), self.model.index(stop, right))
         model = self.view.selectionModel()
         if not selection.isEmpty():
             model.select(selection, QItemSelectionModel.ClearAndSelect)
@@ -368,7 +392,7 @@ class Page(QWidget):
         self.view.horizontalHeader().setSortIndicator(self.state.index_of(cid),
                                                       Qt.DescendingOrder if descending else Qt.AscendingOrder)
         self._sort_matches()
-        self.refresh(keep_matches=True)
+        self.refresh(keep_matches=True, layout=True)
         self.widget.changed(self)
 
     def restore_order(self):
@@ -376,7 +400,7 @@ class Page(QWidget):
         self._last_sort = (None, None)
         self.view.horizontalHeader().setSortIndicator(-1, Qt.AscendingOrder)
         self._sort_matches()
-        self.refresh(keep_matches=True)
+        self.refresh(keep_matches=True, layout=True)
         self.widget.changed(self)
 
     def _sort_matches(self):
@@ -393,10 +417,16 @@ class Page(QWidget):
     # -------------------------------------------------------- selección ----
 
     def ranges(self):
+        """Rangos de la selección, calculados una vez por cada cambio de selección."""
         model = self.view.selectionModel()
         if model is None:
             return []
-        return [(r.top(), r.bottom(), r.left(), r.right()) for r in model.selection() if r.isValid()]
+        if self._ranges is None:
+            self._ranges = [(r.top(), r.bottom(), r.left(), r.right()) for r in model.selection() if r.isValid()]
+        return self._ranges
+
+    def _selection_moved(self, *_):
+        self._ranges = None
 
     def selected_view_rows(self):
         ranges = self.ranges()
@@ -484,8 +514,19 @@ class Page(QWidget):
 
     def selected_output(self, full_rows):
         table = self.output()
+        if table is None:
+            return None
+        key = (id(table), tuple(self.ranges()), bool(full_rows), len(self.model.rows),
+               self.filter_text, self.state.version)
+        if self._selected is not None and self._selected[0] == key:
+            return self._selected[1]
+        result = self._selected_output(table, full_rows)
+        self._selected = (key, result)
+        return result
+
+    def _selected_output(self, table, full_rows):
         rows, cids = self.selection()
-        if table is None or not len(rows):
+        if not len(rows):
             return None
         position = np.empty(self.state.n_rows, dtype=int)
         position[self.state.order] = np.arange(self.state.n_rows)
@@ -504,8 +545,8 @@ class Page(QWidget):
     # -------------------------------------------------------- guardado ----
 
     def stored(self):
-        return dict(signature=self.state.signature, log=list(self.state.log), sort=list(self.state.sort_keys),
-                    columns=self.column_order(), colors=self.colors)
+        return dict(signature=self.state.signature, fingerprint=self.state.fingerprint, log=list(self.state.log),
+                    sort=list(self.state.sort_keys), columns=self.column_order(), colors=self.colors)
 
 
 # -------------------------------------------------------------------- widget ----
@@ -536,11 +577,13 @@ class OWDataTablePro(OWWidget):
 
     class Error(OWWidget.Error):
         operation = Msg("{}")
+        load = Msg("{}")
 
     class Warning(OWWidget.Warning):
         too_many = Msg("Hay {} tablas de entrada: solo las 5 primeras tienen salida (Data 1-5 y Selected Data 1-5).")
         edit = Msg("{}")
         restore = Msg("{}")
+        orphans = Msg("{}")
 
     class Information(OWWidget.Information):
         result = Msg("{}")
@@ -562,6 +605,9 @@ class OWDataTablePro(OWWidget):
         super().__init__()
         self.pages = []
         self._keys = iter(range(10 ** 9))
+        self._load_errors = {}      # clave de la pestaña → mensaje (se acumulan, no se pisan)
+        self._restore_notes = {}
+        self._sent = {}             # salida → último objeto enviado
         self._save_timer = QTimer(self, singleShot=True, interval=0)
         self._save_timer.timeout.connect(self._save_all)
         self._filter_timer = QTimer(self, singleShot=True, interval=FILTER_DEBOUNCE_MS)
@@ -683,7 +729,8 @@ class OWDataTablePro(OWWidget):
         self.filter_edit = QLineEdit(self, placeholderText="Filtrar filas…")
         self.filter_edit.setClearButtonEnabled(True)
         self.filter_edit.setToolTip("Muestra solo las filas que contienen este texto en alguna columna. "
-                                    "No cambia las salidas Data.")
+                                    "No cambia las salidas Data, pero mientras está activo, buscar, "
+                                    "reemplazar y el prefijo actúan solo sobre las filas visibles.")
         self.filter_edit.textChanged.connect(lambda _: self._filter_timer.start())
         box.layout().addWidget(self.filter_edit)
         gui.checkBox(box, self, "select_full_rows", "Seleccionar filas completas", callback=self._selection_mode)
@@ -742,6 +789,8 @@ class OWDataTablePro(OWWidget):
     @Inputs.data.remove
     def remove_data(self, index):
         page = self.pages.pop(index)
+        self._load_errors.pop(page.key, None)
+        self._restore_notes.pop(page.key, None)
         self.tabs.removeTab(self.tabs.indexOf(page))
         page.deleteLater()
         self._relabel()
@@ -751,28 +800,69 @@ class OWDataTablePro(OWWidget):
         self._relabel()
         identifier = self._identifier(self.pages.index(page), table)
         problem = page.set_table(table, identifier)
-        self.Error.operation.clear()
+        self._load_errors.pop(page.key, None)
+        self._restore_notes.pop(page.key, None)
         if problem:
-            self.Error.operation(problem)
-        self.Warning.restore.clear()
+            self._load_errors[page.key] = f"«{identifier}»: {problem}"
         if page.state is not None:
-            saved = (self.stored_changes or {}).get(identifier)
-            if saved:
-                if saved.get("signature") == page.state.signature:
-                    problems = page.state.replay(saved.get("log", []), saved.get("sort", []))
-                    page.colors = saved.get("colors") or page.colors
-                    page.refresh()
-                    page.apply_column_order(saved.get("columns", []))
-                    if problems:
-                        self.Warning.restore(f"«{identifier}»: no se han podido repetir {len(problems)} cambios "
-                                             f"guardados ({problems[0]}).")
-                else:
-                    self.Warning.restore(f"La tabla «{identifier}» ha cambiado: se descartan los cambios que se "
-                                         "guardaron con el workflow.")
-                    self.stored_changes.pop(identifier, None)
+            self._restore(page, identifier)
+        self._show_messages()
         self._relabel()
         self._sync_controls()
         self.commit.deferred()
+
+    def _restore(self, page, identifier):
+        """Repite los cambios guardados con el workflow para esta pestaña, si son suyos.
+
+        Se buscan por el nombre de la pestaña y, si no están (nodo renombrado, o «X (2)» que ha
+        pasado a «X»), por una tabla con la misma forma y la misma huella de contenido.
+        """
+        stored = dict(self.stored_changes or {})
+        state = page.state
+        key, saved = identifier, stored.get(identifier)
+        if saved is None:
+            claimed = {p.identifier for p in self.pages if p is not page}
+            for other, entry in stored.items():
+                if other not in claimed and entry.get("signature") == state.signature \
+                        and entry.get("fingerprint") == state.fingerprint:
+                    key, saved = other, entry
+                    break
+        if not saved:
+            return
+        if saved.get("signature") != state.signature:
+            self._restore_notes[page.key] = (f"La tabla «{identifier}» ha cambiado (columnas o número de filas): se "
+                                             "descartan los cambios que se guardaron con el workflow.")
+            stored.pop(key, None)
+        elif saved.get("fingerprint") not in (None, state.fingerprint):
+            self._restore_notes[page.key] = (f"Los datos de «{identifier}» han cambiado (misma forma, otros valores): "
+                                             "se descartan los cambios guardados para no aplicarlos a filas "
+                                             "equivocadas.")
+            stored.pop(key, None)
+        else:
+            problems = state.replay(saved.get("log", []), saved.get("sort", []))
+            page.colors = saved.get("colors") or page.colors
+            page.refresh(layout=True)
+            page.apply_column_order(saved.get("columns", []))
+            page.saved_key = identifier
+            if key != identifier:
+                stored[identifier] = stored.pop(key)
+                self._restore_notes[page.key] = (f"Los cambios guardados como «{key}» se han aplicado a «{identifier}» "
+                                                 "(misma tabla, otro nombre).")
+            if problems:
+                self._restore_notes[page.key] = (f"«{identifier}»: no se han podido repetir {len(problems)} cambios "
+                                                 f"guardados ({problems[0]}).")
+        self.stored_changes = stored
+
+    def _show_messages(self):
+        """Avisos acumulados por pestaña: una entrada nueva no borra los de las demás."""
+        self.Error.load("\n".join(self._load_errors.values()), shown=bool(self._load_errors))
+        self.Warning.restore("\n".join(self._restore_notes.values()), shown=bool(self._restore_notes))
+        names = {p.identifier for p in self.pages}
+        orphans = [key for key in (self.stored_changes or {}) if key not in names]
+        self.Warning.orphans(
+            "Hay cambios guardados que no corresponden a ninguna entrada conectada: "
+            + ", ".join(f"«{k}»" for k in orphans[:5]) + ("…" if len(orphans) > 5 else "")
+            + ". Se conservan por si vuelve a conectarse esa tabla.", shown=bool(orphans) and bool(self.pages))
 
     def _source_titles(self):
         """Títulos de los nodos conectados a Data, en el orden de las entradas (si se pueden obtener)."""
@@ -797,6 +887,7 @@ class OWDataTablePro(OWWidget):
         return unique
 
     def handleNewSignals(self):
+        self._show_messages()
         self.commit.now()
 
     # ----------------------------------------------------------- pestañas ----
@@ -825,6 +916,11 @@ class OWDataTablePro(OWWidget):
 
     def _tab_changed(self, _):
         self.find_status.setText("")
+        page = self.current_page()
+        self.filter_edit.blockSignals(True)
+        self.filter_edit.setText(page.filter_text if page is not None else "")
+        self.filter_edit.blockSignals(False)
+        self._scope_labels()
         self._sync_controls()
 
     # --------------------------------------------------------- controles ----
@@ -902,8 +998,10 @@ class OWDataTablePro(OWWidget):
         if page is None:
             return
         page.filter_text = self.filter_edit.text().strip()
-        page.refresh(keep_matches=True)
+        page.refresh(keep_matches=True, layout=True)
+        self._scope_labels()
         self._sync_controls()
+        self.commit.deferred()  # la selección visible puede cambiar
 
     def _focus_find(self):
         self.find_edit.setFocus()
@@ -912,18 +1010,30 @@ class OWDataTablePro(OWWidget):
     # ----------------------------------------------------- operaciones ----
 
     def _scope(self, page, scope):
+        """Filas y columnas del ámbito. Con el filtro activo, solo las filas visibles."""
+        visible = page.model.rows if page.filter_text else None
         if scope == SCOPE_ALL:
-            return None, None
-        rows, _ = page.selection()
+            return visible, None
         if scope == SCOPE_COLUMNS:
             cids = page.selected_columns(self.select_full_rows)
             if not cids:
                 raise engine.OperationError("No hay columnas seleccionadas: selecciona alguna celda de las "
                                             "columnas que quieres cambiar.")
-            return None, cids
+            return visible, cids
+        rows, _ = page.selection()
         if not len(rows):
             raise engine.OperationError("No hay filas seleccionadas.")
-        return rows.tolist(), None
+        return rows, None
+
+    def _scope_labels(self):
+        """Con el filtro activo, los ámbitos dicen que solo actúan sobre las filas visibles."""
+        page = self.current_page()
+        filtered = page is not None and bool(page.filter_text)
+        labels = (("Filas visibles (filtro)", "Columnas seleccionadas, filas visibles", SCOPES[2])
+                  if filtered else SCOPES)
+        for combo in (self.find_scope_combo, self.affix_scope_combo):
+            for index, label in enumerate(labels):
+                combo.setItemText(index, label)
 
     def _run(self, action):
         """Ejecuta una operación sobre la pestaña actual y muestra su error, si lo hay."""
@@ -1021,11 +1131,8 @@ class OWDataTablePro(OWWidget):
         kind = self.kind_combo.itemData(index)
 
         def action(page):
-            lost = {}
-            for cid in self._target_columns(page):
-                count = page.state.convert(cid, kind)
-                if count:
-                    lost[page.state.column(cid).name] = count
+            # Atómico en el motor: si una columna no puede convertirse, no cambia ninguna.
+            lost = page.state.convert(self._target_columns(page), kind)
             page.refresh()
             self.changed(page)
             if lost:
@@ -1042,8 +1149,7 @@ class OWDataTablePro(OWWidget):
         role = self.role_combo.itemData(index)
 
         def action(page):
-            for cid in self._target_columns(page):
-                page.state.set_role(cid, role)
+            page.state.set_role(self._target_columns(page), role)  # atómico
             page.refresh()
             self.changed(page)
         self._run(action)
@@ -1104,6 +1210,9 @@ class OWDataTablePro(OWWidget):
         for page in self.pages:
             if page.state is None:
                 continue
+            if page.saved_key and page.saved_key != page.identifier:
+                stored.pop(page.saved_key, None)  # el nodo se ha renombrado: se guarda con el nombre nuevo
+            page.saved_key = page.identifier
             if page.state.log or page.state.sort_keys or page.colors != {"cells": {}, "rows": {}, "cols": {}} \
                     or page.column_order() != [c.cid for c in page.state.columns]:
                 stored[page.identifier] = page.stored()
@@ -1193,16 +1302,21 @@ class OWDataTablePro(OWWidget):
         slots = [(self.Outputs.data_1, self.Outputs.selected_data_1), (self.Outputs.data_2, self.Outputs.selected_data_2),
                  (self.Outputs.data_3, self.Outputs.selected_data_3), (self.Outputs.data_4, self.Outputs.selected_data_4),
                  (self.Outputs.data_5, self.Outputs.selected_data_5)]
+        if not self.pages and not self._sent:
+            return  # sin entradas todavía: no hay nada que enviar (todas las salidas ya son None)
         notes = []
         for index, (data_out, selected_out) in enumerate(slots):
             page = self.pages[index] if index < len(self.pages) else None
             if page is None or page.state is None:
-                data_out.send(None)
-                selected_out.send(None)
-                continue
-            data_out.send(page.output())
-            selected_out.send(page.selected_output(self.select_full_rows))
-            notes.extend(f"{page.identifier}: {note}" for note in page.state.notes)
+                data, selected = None, None
+            else:
+                data, selected = page.output(), page.selected_output(self.select_full_rows)
+                notes.extend(f"{page.identifier}: {note}" for note in page.state.notes)
+            # Solo lo que ha cambiado: el lienzo no descarta los envíos repetidos y recalcularía todo.
+            for output, value in ((data_out, data), (selected_out, selected)):
+                if self._sent.get(output.name, False) is not value:
+                    self._sent[output.name] = value
+                    output.send(value)
         self.Information.notes("\n".join(notes), shown=bool(notes))
 
     def send_report(self):

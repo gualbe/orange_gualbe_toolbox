@@ -18,7 +18,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import numpy as np
 import scipy.sparse as sp
 
-from AnyQt.QtCore import QEvent, QItemSelectionModel, Qt
+from AnyQt.QtCore import QEvent, QItemSelection, QItemSelectionModel, Qt
 from AnyQt.QtTest import QTest
 from AnyQt.QtWidgets import QApplication
 from Orange.data import ContinuousVariable, DiscreteVariable, Domain, StringVariable, Table, TimeVariable
@@ -63,7 +63,7 @@ class Banco:
             for nombre, valor in AJUSTES.items():
                 setattr(self.w, nombre, valor)
             self.w._selection_mode()
-        self.salida = {}
+        self.salida, self.envios = {}, {}
         for i in range(1, 6):
             for nombre in (f"data_{i}", f"selected_data_{i}"):
                 getattr(self.w.Outputs, nombre).send = self._capturar(nombre)
@@ -71,6 +71,7 @@ class Banco:
     def _capturar(self, nombre):
         def recibir(valor):
             self.salida[nombre] = valor
+            self.envios[nombre] = self.envios.get(nombre, 0) + 1
         return recibir
 
     def titulos(self, *titulos):
@@ -481,6 +482,169 @@ banco.cerrar()
 pesada = Table.from_numpy(Domain([ContinuousVariable("a")]), np.arange(5.0)[:, None], W=np.arange(5.0) + 1)
 check(np.array_equal(engine.TableState(pesada).output().W, np.arange(5.0) + 1), "los pesos se conservan")
 
+
+# ------------------------------------------------- correcciones de la 0.5.1 ----
+
+# 1. Precisión: abrir y confirmar el editor no redondea; reemplazar no pierde decimales.
+exacta = Table.from_numpy(Domain([ContinuousVariable("x")]), np.array([[3.14159265358], [0.000123456789], [123456789.123]]))
+banco = Banco().meter(exacta)
+pagina = banco.pagina(0)
+editores = [pagina.model.data(pagina.model.index(i, 0), Qt.EditRole) for i in range(3)]
+check(editores == ["3.14159265358", "0.000123456789", "123456789.123"],
+      f"el editor recibe el valor con toda la precisión ({editores})")
+for i in range(3):
+    pagina.model.setData(pagina.model.index(i, 0), pagina.model.data(pagina.model.index(i, 0), Qt.EditRole))
+    pagina.model.setData(pagina.model.index(i, 0), pagina.model.data(pagina.model.index(i, 0), Qt.DisplayRole))
+check(list(pagina.state.column("x").values) == [3.14159265358, 0.000123456789, 123456789.123] and not pagina.state.log
+      and pagina.state.column("x").edited is None, "confirmar sin cambios no redondea ni registra ninguna edición")
+banco.w.find_regex = True
+banco.w.find_edit.setText(r"(\d)")
+banco.w.replace_edit.setText(r"\1")
+check(banco.w.replace_all()[1] == 0 and not pagina.state.log, "un reemplazo que no cambia el número no toca la celda")
+banco.w.find_regex = False
+banco.w.find_edit.setText("123456789")
+banco.w.replace_edit.setText("223456789")
+banco.w.replace_all()
+check(pagina.state.column("x").values[2] == 223456789.123 and pagina.state.column("x").values[0] == 3.14159265358,
+      "reemplazar en una numérica conserva los decimales que no se ven")
+banco.w.find_edit.setText("5.0")
+check(engine.TableState(iris).find("5.0", cids=["sepal length"]) and
+      len(engine.TableState(iris).find("5.0", cids=["sepal length"])) == 10,
+      "se sigue buscando en el texto visible cuando es exacto («5.0»)")
+banco.cerrar()
+
+# 2 y 5. Restaurar: avisos acumulados, huella de contenido, nodo renombrado y cambios sin dueño.
+banco = Banco().titulos("A", "B").meter(iris.copy(), titanic.copy())
+for i in range(2):
+    pagina = banco.pagina(i)
+    pagina.model.setData(pagina.model.index(0, 0), "?")
+banco.w._save_all()
+ajustes = banco.w.settingsHandler.pack_data(banco.w)
+banco.cerrar()
+otra = Banco(ajustes).titulos("A", "B").meter(iris[:100].copy(), titanic.copy())
+check("«A» ha cambiado" in otra.avisos() and otra.w.pages[1].state.log,
+      "el aviso de los cambios descartados sobrevive a las demás entradas, que sí se restauran")
+otra.cerrar()
+cambiada = iris.copy()
+with cambiada.unlocked():
+    cambiada.X[7, 2] += 1
+otra = Banco(ajustes).titulos("A", "B").meter(cambiada, titanic.copy())
+check("misma forma, otros valores" in otra.avisos() and not otra.w.pages[0].state.log,
+      "misma forma pero otros datos: los cambios se descartan con aviso")
+otra.cerrar()
+otra = Banco(ajustes).titulos("Flores", "B").meter(iris.copy(), titanic.copy())
+check(otra.w.pages[0].state.log and "otro nombre" in otra.avisos() and "Flores" in otra.w.stored_changes,
+      "nodo renombrado: los cambios se reconocen por el contenido y se guardan con el nombre nuevo")
+otra.cerrar()
+otra = Banco(ajustes).titulos("B").meter(titanic.copy())
+check("no corresponden a ninguna entrada" in otra.avisos() and "«A»" in otra.avisos(),
+      "cambios guardados sin entrada que los reciba: se avisa y se conservan")
+otra.cerrar()
+
+# 9. Tras restaurar se puede deshacer.
+otra = Banco(ajustes).titulos("A", "B").meter(iris.copy(), titanic.copy())
+otra.pagina(0)
+check(otra.w.pages[0].state.can_undo(), "tras restaurar el workflow se pueden deshacer los cambios repetidos")
+otra.w.undo()
+check(otra.w.pages[0].state.column("sepal length").values[0] == 5.1, "y deshacer devuelve el valor original")
+otra.cerrar()
+
+# 3. Solo se envían las salidas que cambian.
+banco = Banco().meter(iris, titanic)
+banco.envios.clear()
+pagina = banco.pagina(0)
+pagina.view.selectRow(2)
+app.processEvents()
+banco.enviar()
+check(set(banco.envios) == {"selected_data_1"}, f"seleccionar solo reenvía Selected Data de esa pestaña ({banco.envios})")
+banco.envios.clear()
+segunda = banco.pagina(1)
+segunda.model.setData(segunda.model.index(0, 0), "second")
+banco.enviar()
+check(set(banco.envios) == {"data_2"}, f"editar solo reenvía las salidas de esa pestaña ({banco.envios})")
+banco.cerrar()
+
+# 4. Reemplazar una categoría por «» o «?» da un valor desconocido.
+for vacio in ("", "?"):
+    estado = engine.TableState(iris)
+    estado.replace("Iris-setosa", vacio, cids=["iris"])
+    columna = estado.column("iris")
+    check(columna.categories == ["Iris-versicolor", "Iris-virginica"] and int(np.isnan(columna.values).sum()) == 50
+          and vacio not in estado.output().domain.class_var.values,
+          f"reemplazar una categoría por «{vacio}» la deja desconocida")
+texto = Table.from_numpy(Domain([], metas=[StringVariable("t")]), np.empty((3, 0)),
+                         metas=np.array([["a"], ["?"], ["b"]], dtype=object))
+estado = engine.TableState(texto)
+estado.convert("t", engine.CATEGORICAL)
+check(estado.column("t").categories == ["a", "b"] and np.isnan(estado.column("t").values[1]),
+      "al pasar texto a categórica, «?» es desconocido")
+
+# 6. Tipo y rol de varias columnas a la vez: todo o nada.
+banco = Banco().meter(zoo)
+pagina = banco.pagina(0)
+for nombre in ("hair", "name"):
+    pagina.view.selectionModel().select(
+        QItemSelection(pagina.model.index(0, pagina.state.index_of(nombre)),
+                       pagina.model.index(pagina.model.rowCount() - 1, pagina.state.index_of(nombre))),
+        QItemSelectionModel.Select)
+app.processEvents()
+banco.w.change_role(banco.w.role_combo.findData(engine.TARGET))
+banco.enviar()
+check("No se ha cambiado ningún rol" in banco.errores() and pagina.state.column("hair").role == engine.ATTRIBUTE
+      and "hair" in [v.name for v in banco.salida["data_1"].domain.attributes],
+      "rol en varias columnas con una imposible: no cambia ninguna y el estado coincide con la salida")
+banco.cerrar()
+muchas_cat = Table.from_numpy(Domain([], metas=[StringVariable("a"), StringVariable("b")]), np.empty((10001, 0)),
+                              metas=np.array([[f"v{i}", "x"] for i in range(10001)], dtype=object))
+estado = engine.TableState(muchas_cat)
+try:
+    estado.convert(["b", "a"], engine.CATEGORICAL)
+    atomico = False
+except engine.OperationError:
+    atomico = estado.column("b").kind == engine.STRING and not estado.log
+check(atomico, "cambio de tipo en varias columnas que falla en una: no cambia ninguna")
+
+# 7. Fechas: la hora se ve en una columna de solo fechas y se respeta la zona de la columna.
+estado = engine.TableState(Table.from_numpy(Domain([TimeVariable("d", have_date=1)]), np.array([[1.6e9]])))
+estado.edit(0, "d", "2026-11-13 10:30")
+check("10:30" in estado.column("d").text(0) and estado.output().domain["d"].have_time, "escribir una hora en una columna de fechas la muestra")
+zona = TimeVariable("t")
+valores = [zona.parse("2020-01-01 10:00:00+02:00"), zona.parse("2020-01-02 11:00:00+02:00")]
+estado = engine.TableState(Table.from_numpy(Domain([zona]), np.array(valores)[:, None]))
+estado.edit(1, "t", "2020-01-03 11:00")
+check(estado.column("t").text(1).startswith("2020-01-03 11:00:00") and "+0200" in estado.column("t").text(1),
+      f"una hora sin zona se toma en la zona de la columna ({estado.column('t').text(1)})")
+reemplazo = engine.TableState(Table.from_numpy(Domain([zona]), np.array(valores)[:, None]))
+reemplazo.replace("2020-01-01", "2021-01-01", cids=["t"])
+check(reemplazo.column("t").text(0).startswith("2021-01-01 10:00:00"), "reemplazar en fechas con zona conserva la hora local")
+
+# 8. Un prefijo que superaría el máximo de valores no deja la columna a medias.
+grande_cat = DiscreteVariable("c", values=tuple(f"v{i}" for i in range(9999)))
+estado = engine.TableState(Table.from_numpy(Domain([grande_cat]), np.arange(9999.0)[:, None]))
+try:
+    estado.affix(prefix="p_", cids=["c"])
+except engine.OperationError:
+    pass
+check(len(estado.column("c").categories) == 9999 and estado.column("c").var is grande_cat and not estado.log,
+      "prefijo rechazado por el máximo de valores: la columna queda intacta")
+
+# Observación: con el filtro activo, los ámbitos actúan solo sobre las filas visibles.
+banco = Banco().meter(iris.copy())
+pagina = banco.pagina(0)
+banco.w.filter_edit.setText("virginica")
+banco.w._apply_filter()
+check(banco.w.find_scope_combo.itemText(0) == "Filas visibles (filtro)", "con filtro, el ámbito dice «Filas visibles»")
+banco.w.find_edit.setText("Iris-")
+banco.w.replace_edit.setText("")
+banco.w.find_scope = SCOPE_ALL
+total, celdas, _ = banco.w.replace_all()
+check(celdas == 50 and pagina.state.column("iris").categories == ["Iris-setosa", "Iris-versicolor", "virginica"],
+      "con filtro, reemplazar solo cambia las filas visibles")
+banco.w.filter_edit.setText("")
+banco.w._apply_filter()
+check(banco.w.find_scope_combo.itemText(0) == "Toda la tabla", "sin filtro, vuelve a «Toda la tabla»")
+banco.cerrar()
+
 # --------------------------------------------------- tablas grandes ----
 
 n = 300_000
@@ -511,8 +675,25 @@ reemplazo = time.time() - inicio
 inicio = time.time()
 banco.enviar()
 salida_t = time.time() - inicio
+fechas_g = engine.TableState(Table.from_numpy(Domain([TimeVariable("f", have_date=1, have_time=1)]),
+                                              (1.6e9 + r.randint(0, 10 ** 7, n)).astype(float)[:, None]))
+inicio = time.time()
+fechas_g.replace("2020", "2021", cids=["f"])
+fecha_reemplazo = time.time() - inicio
+inicio = time.time()
+fechas_g.convert("f", engine.STRING)
+fecha_texto = time.time() - inicio
+inicio = time.time()
+fechas_g.convert("f", engine.DATETIME)
+texto_fecha = time.time() - inicio
+inicio = time.time()
+pagina.state.replace("fila", "row", rows=np.arange(0, n, 2), cids=["s"])
+por_filas = time.time() - inicio
 print(f"300.000 filas: carga {carga:.2f} s, ordenar {ordenar:.2f} s, 286 celdas {lectura * 1000:.0f} ms, "
-      f"reemplazar en una columna {reemplazo:.2f} s, salidas {salida_t:.2f} s")
+      f"reemplazar en una columna {reemplazo:.2f} s, salidas {salida_t:.2f} s, reemplazar fechas {fecha_reemplazo:.2f} s, "
+      f"fecha a texto {fecha_texto:.2f} s, texto a fecha {texto_fecha:.2f} s, 150.000 filas alternas {por_filas:.2f} s")
+check(fecha_reemplazo < 2 and fecha_texto < 2 and texto_fecha < 2 and por_filas < 2,
+      "fechas y ámbito por filas, vectorizados")
 check(carga < 20 and ordenar < 5 and lectura < 1 and reemplazo < 10 and salida_t < 10 and celdas == int((grande.X[:, 6] == 4).sum()),
       "tablas grandes: carga, orden, lectura perezosa, reemplazo y salidas en tiempos razonables")
 banco.cerrar()

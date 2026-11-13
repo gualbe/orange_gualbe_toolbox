@@ -80,8 +80,15 @@ Doble clic (o empieza a escribir) en una celda. El valor se comprueba según el 
 Dejar la celda vacía o escribir ``?`` la deja como valor desconocido. Las celdas cambiadas se
 resaltan en amarillo y la pestaña lleva ✎.
 
+El editor muestra el número **con toda su precisión** aunque la celda lo redondee (por ejemplo
+``3.14159265358`` en una celda que muestra ``3.14159``), así que abrir una celda y confirmarla sin
+tocarla no cambia nada ni cuenta como edición. En una columna de fechas, una hora escrita sin zona
+se toma en la zona horaria de la columna, y si se escribe una hora en una columna que solo tenía
+fechas, la columna pasa a mostrar también la hora.
+
 **Deshacer y rehacer**: **Ctrl+Z** y **Ctrl+Y** (o los botones del panel *Cambios*) deshacen y
 rehacen ediciones, reemplazos, prefijos, cambios de nombre, de tipo y de rol, hasta 50 pasos.
+También se pueden deshacer los cambios que se han repetido al abrir un workflow guardado.
 
 Buscar y reemplazar
 -------------------
@@ -95,11 +102,14 @@ celdas.
   ``\g<nombre>`` insertan los grupos. Por ejemplo, buscar ``^(\w+), (\w+)$`` y reemplazar por
   ``\2 \1`` convierte «García, Ana» en «Ana García».
 - **Distinguir mayúsculas**: si no se marca, «madrid» encuentra «Madrid».
-- **Ámbito**: toda la tabla, las columnas seleccionadas o las filas seleccionadas.
+- **Ámbito**: toda la tabla, las columnas seleccionadas o las filas seleccionadas. **Con el filtro
+  rápido activo, solo cuentan las filas visibles**, y el ámbito lo dice («Filas visibles (filtro)»).
 
-Se busca en el texto que se ve en cada celda. En una columna numérica o de fecha, un reemplazo
-que no da un valor válido se rechaza y el widget dice cuántos. En una categórica, el valor
-nuevo ocupa el lugar del antiguo en la lista de valores.
+Se busca en el texto que se ve en cada celda; en las numéricas cuyo texto redondea el valor, en el
+valor completo, así que un reemplazo nunca pierde decimales. Una celda cuyo número no cambia no se
+toca. En una columna numérica o de fecha, un reemplazo que no da un valor válido se rechaza y el
+widget dice cuántos. En una categórica, el valor nuevo ocupa el lugar del antiguo en la lista de
+valores, y reemplazar por nada o por ``?`` deja el valor como desconocido.
 
 Prefijo y sufijo
 ----------------
@@ -132,8 +142,9 @@ numéricas y los valores más frecuentes en las categóricas.
 Vista
 -----
 
-- **Filtrar filas**: muestra solo las filas que contienen el texto en alguna columna. Solo
-  cambia lo que se ve; *Data N* sigue llevando todas las filas.
+- **Filtrar filas**: muestra solo las filas que contienen el texto en alguna columna. *Data N*
+  sigue llevando todas las filas, pero buscar, reemplazar y el prefijo y sufijo actúan solo
+  sobre las filas visibles mientras el filtro esté activo.
 - **Seleccionar filas completas**: si se desmarca, se seleccionan celdas sueltas y *Selected
   Data N* lleva solo las columnas seleccionadas.
 - **Barras en las columnas numéricas**: una barra bajo cada valor, proporcional a su posición
@@ -149,15 +160,35 @@ Cambios guardados
 -----------------
 
 Los cambios de cada pestaña (ediciones, reemplazos, nombres, tipos, roles, orden y colores) se
-guardan con el workflow. Al volver a abrirlo, si la tabla de entrada tiene las mismas columnas y
-el mismo número de filas, se repiten; si ha cambiado, se descartan con un aviso. **Restablecer**
-descarta todos los cambios de la pestaña abierta.
+guardan con el workflow, con el nombre de la pestaña y una huella del contenido de la tabla. Al
+volver a abrirlo:
+
+- si llega la misma tabla (mismas columnas, mismo número de filas y mismos datos), se repiten y se
+  pueden deshacer;
+- si se ha renombrado el nodo de origen, se reconocen por el contenido y se aplican igual;
+- si la tabla ha cambiado, aunque tenga la misma forma, se descartan con un aviso, para no aplicar
+  ediciones a filas equivocadas;
+- si hay cambios guardados que no corresponden a ninguna entrada conectada, el widget lo avisa y
+  los conserva por si vuelve a conectarse esa tabla.
+
+Los avisos de cada pestaña se mantienen aunque lleguen otras entradas. **Restablecer** descarta
+todos los cambios de la pestaña abierta.
+
+Cuando cambia algo, el widget solo vuelve a enviar las salidas afectadas: al seleccionar, solo
+*Selected Data N* de esa pestaña; al editar, las de esa pestaña. Así no se recalcula todo lo que
+cuelga del nodo.
 
 Tablas grandes
 --------------
 
-La vista solo lee las celdas que se ven y las operaciones trabajan por columnas enteras. Con
-300.000 filas, abrir la tabla tarda menos de medio segundo; ordenar, convertir o reemplazar en
-una columna, una fracción de segundo; y buscar en toda la tabla o filtrar, un par de segundos la
-primera vez (los textos se guardan y las siguientes son casi inmediatas). Una tabla dispersa se muestra y se emite como densa (el widget
+La vista solo lee las celdas que se ven y las operaciones trabajan por columnas enteras. Medido
+con 300.000 filas y diez columnas en un portátil:
+
+- abrir la tabla, ordenar, convertir de tipo (también fechas) o reemplazar en una columna, o en
+  150.000 filas seleccionadas: menos de un segundo;
+- buscar en toda la tabla: unos 2 segundos la primera vez y menos de 1 las siguientes (los textos se
+  guardan hasta el siguiente cambio);
+- filtrar: menos de un segundo.
+
+Una tabla dispersa se muestra y se emite como densa (el widget
 lo avisa) siempre que no supere 50 millones de celdas.

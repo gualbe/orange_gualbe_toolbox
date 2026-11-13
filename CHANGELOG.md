@@ -3,6 +3,28 @@
 Cada versión se publica a la vez en GitHub (release `vX.Y.Z`) y en
 [PyPI](https://pypi.org/project/orange-gualbe-toolbox/).
 
+## 0.5.1 (2026-11-13)
+
+Correcciones de **Data Table Pro**:
+
+- Abrir una celda numérica y confirmarla sin cambios ya no redondea el valor ni cuenta como edición:
+  el editor recibe el número con toda su precisión. Buscar y reemplazar tampoco pierde decimales y no
+  toca una celda cuyo número no cambia.
+- Reemplazar una categoría por nada o por «?» la deja como valor desconocido; al pasar texto a
+  categórica, «?» también es desconocido.
+- Las fechas escritas sin zona se toman en la zona horaria de la columna, y una hora escrita en una
+  columna de solo fechas se muestra.
+- Cambiar el tipo o el rol de varias columnas es todo o nada: si una no puede, no cambia ninguna. Un
+  prefijo rechazado por el máximo de valores deja la columna intacta.
+- Al abrir un workflow, los cambios guardados se reconocen también por el contenido (nodo
+  renombrado), se descartan con aviso si los datos son otros aunque tengan la misma forma, y se
+  avisa de los que no corresponden a ninguna entrada. Los avisos de cada pestaña ya no se borran al
+  llegar otra entrada, y lo restaurado se puede deshacer.
+- Solo se reenvían las salidas que cambian: al seleccionar, la de la selección de esa pestaña.
+- Con el filtro rápido activo, buscar, reemplazar y el prefijo actúan solo sobre las filas visibles, y
+  el ámbito lo indica.
+- Más rápido con tablas grandes: fechas vectorizadas, formato de números y ámbito por filas.
+
 ## 0.5.0 (2026-11-13)
 
 - Nuevo widget **Data Table Pro**: muestra varias tablas a la vez, cada una en su pestaña, y las
