@@ -149,12 +149,45 @@ Antes de tocar widgets, ayuda o empaquetado lee
 - Salidas: Predictions y Fold Scores con iteración, fechas de la ventana y objetivo; nueva Horizon
   Scores. Pestañas Ventanas, Iteraciones y Horizontes tras Puntuaciones (`settings_version` 2).
 
+### Decisiones del widget Data Table Pro (tomadas en su alta, 0.5.0, 2026-11-13)
+
+- Pedido por el usuario: partir del Data Table nativo, con varias tablas en pestañas, ordenar y
+  reordenar, editar, buscar y reemplazar (regex), prefijo y sufijo, renombrar, tipo y rol; visual,
+  versátil, robusto y eficiente con cientos de miles de filas.
+- Salidas fijas en pares numerados hasta 5 («Data N» y «Selected Data N», decisión del usuario:
+  Orange no admite nombres dinámicos), en el orden de las pestañas, que llevan el distintivo ①…⑤.
+  Más de 5 entradas: aviso, y las sobrantes sin salida. Al quitar un enlace, todo sube un puesto.
+  Cada salida se llama como el nodo de origen (de `_OWBaseWidget__process_signal_input`) o la tabla.
+- Motor sin Qt en `_dtp_engine.py`: cada tabla se pasa una vez a columnas de numpy y todo opera
+  por columnas o por valor distinto. Modelo Qt perezoso propio (el `TableModel` de Orange es de
+  solo lectura). Selección siempre por rangos: `isColumnSelected` y `selectedIndexes` de Qt
+  recorren todas las filas y son lentísimos con tablas grandes.
+- Ordenar es estable desde el orden actual; desconocidos al final; las categóricas, por el orden
+  de sus valores. Las columnas se reordenan en la cabecera y la salida respeta el orden dentro de
+  cada rol.
+- Prefijo y sufijo solo en texto y categóricas: las numéricas y de fecha no se tocan, con aviso.
+  Reemplazar en una categórica cambia cada valor distinto y el nuevo ocupa el lugar del antiguo.
+  Un reemplazo que no da un valor válido en una numérica o de fecha se rechaza y se cuenta.
+- Columnas de texto siempre meta (Orange lo exige). Número a fecha: segundos desde 1970. Las
+  conversiones fallidas se cuentan por columna.
+- «Columnas seleccionadas» (ámbito, tipo y rol): las columnas enteras seleccionadas; si no hay,
+  con filas completas la columna de la celda actual y, si no, las de las celdas seleccionadas.
+- Deshacer y rehacer con instantáneas de las columnas afectadas, hasta 50 pasos. Cada operación
+  de datos va además a un registro serializable que se guarda con el workflow (`stored_changes`,
+  por identificador de pestaña) y se repite si llega una tabla con la misma firma (columnas y
+  número de filas); si no, se descarta con aviso. El orden se repite después de los datos.
+- El filtro rápido solo cambia la vista: «Data N» lleva todas las filas.
+- Tablas dispersas: se muestran y emiten densas, con aviso, hasta 50 millones de celdas.
+- En los tests, borrar los widgets (`deleteLater` + `sendPostedEvents`) antes de salir; si no, el
+  intérprete puede terminar con SIGBUS. Los temporizadores, siempre hijos del widget.
+
 ## Widgets
 
 | Widget | Fichero / clase | Qué hace |
 |---|---|---|
 | SMOTE | `owsmote.py` / `OWSmote` | Balancea las clases con instancias sintéticas (SMOTE, SMOTENC o SMOTEN); gráfico antes/después. |
 | File Import | `owfileimport.py` / `OWFileImport` (motor en `_fileimport.py`) | Importa desde archivo o URL (CSV, TSV, TAB, XLS/XLSX y ARFF) con vista previa, edición de columnas e importación avanzada. |
+| Data Table Pro | `owdatatablepro.py` / `OWDataTablePro` (motor en `_dtp_engine.py`) | Muestra varias tablas en pestañas y las edita: ordenar, reordenar, editar, buscar y reemplazar, tipos y roles, con salidas numeradas. |
 | Test & Score Pro | `owtestscorepro.py` / `OWTestScorePro` (`_tsp_*.py`) | Evalúa modelos como Test & Score, también con ventana deslizante para series temporales, y los compara con tests rigurosos, gráficos, tablas de resultados e informe HTML o PDF. |
 
 ## Pruebas
