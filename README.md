@@ -30,6 +30,7 @@ español (F1 o icono **?**).
 | **SMOTE** | Balancea las clases generando instancias sintéticas de las minoritarias. Muestra la distribución antes y después. |
 | **File Import** | Importa datos desde un archivo o una URL (CSV, TSV, TAB, XLS/XLSX y ARFF) con vista previa y edición de columnas. |
 | **Test & Score Pro** | Evalúa modelos como Test & Score y los compara con tests estadísticos rigurosos, gráficos e informe exportable. |
+| **Data Table Pro** | Muestra varias tablas en pestañas y las edita como una hoja de cálculo: ordenar, reordenar columnas, editar, buscar y reemplazar, tipos y roles, con salidas numeradas. |
 
 ### SMOTE
 
@@ -105,6 +106,33 @@ a la pregunta clave: ¿la diferencia entre modelos es real o se debe al azar?
   <img src="https://raw.githubusercontent.com/gualbe/orange_gualbe_toolbox/main/assets/captura_ventana.png" alt="Test &amp; Score Pro con ventana deslizante: opciones de la ventana y vista previa de las iteraciones" width="760">
 </p>
 
+### Data Table Pro
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/gualbe/orange_gualbe_toolbox/main/assets/captura_datatablepro.png" alt="Data Table Pro con tres tablas en pestañas, celdas editadas, barras y coincidencias resaltadas" width="760">
+</p>
+
+Parte del **Data Table** de Orange y lo convierte en un editor de tablas:
+
+- **Varias tablas**, cada una en su pestaña. Salidas numeradas **Data 1…5** (tabla completa con
+  los cambios) y **Selected Data 1…5** (filas seleccionadas), en el orden de las pestañas, que
+  llevan el número de su salida (①, ②…). Cada salida se llama como el nodo de origen.
+- **Ordenar** pulsando una columna (ascendente, descendente y vuelta al orden original) y
+  **reordenar columnas** arrastrando la cabecera: las salidas respetan los dos órdenes.
+- **Editar celdas** con validación por tipo, y **deshacer y rehacer** (Ctrl+Z, Ctrl+Y).
+- **Buscar y reemplazar**, también con expresiones regulares y grupos, distinguiendo o no
+  mayúsculas, en toda la tabla, en las columnas o en las filas seleccionadas, con las
+  coincidencias resaltadas.
+- **Prefijo y sufijo** en columnas de texto y categóricas.
+- **Renombrar columnas** y cambiar su **tipo** (categórica, numérica, fecha y hora, texto) y su
+  **rol** (atributo, objetivo, meta), con varios objetivos; las conversiones fallidas se cuentan.
+- **Vista**: filtro rápido de filas, barras en las numéricas, colores de las categóricas, celdas
+  editadas resaltadas, colores propios de fondo y de texto, estadísticas de cada columna en su
+  cabecera y copiar al portapapeles.
+- Los cambios se **guardan con el workflow** y se repiten mientras la entrada no cambie.
+- Pensado para tablas grandes: con 300.000 filas, abrir, ordenar o reemplazar en una columna
+  tardan menos de un segundo, y buscar en toda la tabla, un par de segundos.
+
 ## Ayuda de los widgets
 
 La ayuda (F1 / icono "?") se genera con Sphinx dentro del propio paquete y debe
@@ -162,7 +190,7 @@ académico, puedes tomar los metadatos de
 (GitHub ofrece «Cite this repository» con el formato APA o BibTeX), por ejemplo:
 
 > Asencio Cortés, G. (2026). *orange_gualbe_toolbox: utilidades visuales de ciencia
-> de datos para Orange Data Mining* (versión 0.4.4) [Software]. Zenodo.
+> de datos para Orange Data Mining* (versión 0.5.0) [Software]. Zenodo.
 > https://doi.org/10.5281/zenodo.24144757
 
 **Componentes de terceros.** El add-on depende de Orange Data Mining (GPL-3.0 o

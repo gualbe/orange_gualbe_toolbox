@@ -3,6 +3,23 @@
 Cada versión se publica a la vez en GitHub (release `vX.Y.Z`) y en
 [PyPI](https://pypi.org/project/orange-gualbe-toolbox/).
 
+## 0.5.0 (2026-11-13)
+
+- Nuevo widget **Data Table Pro**: muestra varias tablas a la vez, cada una en su pestaña, y las
+  edita como una hoja de cálculo.
+  - Salidas numeradas **Data 1…5** y **Selected Data 1…5** en el orden de las pestañas, que
+    llevan su número; cada tabla de salida se llama como el nodo de origen. Con más de cinco
+    entradas, aviso; al quitar un enlace, las salidas se recolocan.
+  - Ordenar filas pulsando una columna (y volver al orden original), reordenar columnas
+    arrastrando la cabecera, editar celdas con validación por tipo y deshacer y rehacer.
+  - Buscar y reemplazar con expresiones regulares y grupos, distinguiendo mayúsculas, en toda la
+    tabla o en las columnas o filas seleccionadas, con las coincidencias resaltadas.
+  - Prefijo y sufijo, renombrar columnas y cambiar su tipo y su rol (con varios objetivos).
+  - Filtro rápido, barras en las numéricas, colores de las categóricas, celdas editadas
+    resaltadas, colores propios, estadísticas en la cabecera, copiar y restablecer.
+  - Los cambios se guardan con el workflow. Pensado para tablas grandes: vista perezosa y
+    operaciones por columnas.
+
 ## 0.4.4 (2026-11-11)
 
 - Metadatos para Zenodo (`.zenodo.json`): cada release se archiva con DOI.

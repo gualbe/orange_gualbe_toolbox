@@ -116,8 +116,9 @@ says so in its header:
   Content-Disposition header of a download.
 
 The rest of the code, including the readers of every file format (also ARFF),
-the statistical tests, the report, the sliding window validation, the widget
-icons and the documentation, is original work of the author. Other parts of
+the statistical tests, the report, the sliding window validation, the Data
+Table Pro widget (inspired by Orange's Data Table, without copying its code),
+the widget icons and the documentation, is original work of the author. Other parts of
 the add-on only import or subclass Orange classes and functions (such as
 OWWidget, Validation, Results, results_merge or usable_scorers), which remain
 part of Orange.

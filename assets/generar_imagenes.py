@@ -151,3 +151,35 @@ for nombre, especificacion in modos:
     figura.suptitle(nombre, fontsize=11, x=0.02, ha="left")
     ruta = os.path.join(AQUI, "ventana_" + nombre.split(":")[0].split(" ")[0].lower() + ".png")
     figura.savefig(ruta, dpi=150, facecolor="white")
+
+
+# ------------------------------------------------------------ Data Table Pro ----
+from types import SimpleNamespace  # noqa: E402
+
+from orangecontrib.orange_gualbe_toolbox.widgets.owdatatablepro import OWDataTablePro  # noqa: E402
+
+tabla = OWDataTablePro.__new__(OWDataTablePro, signal_manager=None, stored_settings={
+    "auto_commit": True, "select_full_rows": True, "show_bars": True, "color_categories": True,
+    "highlight_edits": True, "stored_changes": {}})
+tabla.__init__()
+tabla.show()
+# Títulos como los daría el lienzo para tres nodos conectados.
+tabla.__dict__["_OWBaseWidget__process_signal_input"] = [
+    SimpleNamespace(channel=SimpleNamespace(name="Data"), link=SimpleNamespace(source_node=SimpleNamespace(title=t)))
+    for t in ("Flores", "Pasajeros", "Vivienda")]
+for posicion, nombre in enumerate(("iris", "titanic", "housing")):
+    tabla.insert_data(posicion, Table(nombre))
+tabla.handleNewSignals()
+flores = tabla.pages[0]
+flores.model.setData(flores.model.index(3, 1), "3,25")
+flores.model.setData(flores.model.index(7, 0), "5,05")
+flores.sort("petal length", False)
+tabla.find_edit.setText("versicolor")
+tabla.find_all()
+tabla._sync_controls()
+tabla.resize(1180, 760)
+app.processEvents()
+time.sleep(0.2)
+app.processEvents()
+tabla.grab().save(os.path.join(AQUI, "captura_datatablepro.png"))
+tabla.onDeleteWidget()

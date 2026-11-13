@@ -6,12 +6,13 @@ abstract: >-
   Add-on de Orange Data Mining con utilidades visuales de ciencia de datos:
   balanceo de clases con SMOTE, importación robusta de archivos y URL, y
   evaluación y comparación estadística de modelos (Test & Score Pro), con
-  validación por ventana deslizante para series temporales.
+  validación por ventana deslizante para series temporales, y visualización y
+  edición de varias tablas (Data Table Pro).
 authors:
   - family-names: "Asencio Cortés"
     given-names: "Gualberto"
-version: "0.4.4"
-date-released: "2026-11-11"
+version: "0.5.0"
+date-released: "2026-11-13"
 license: GPL-3.0-or-later
 doi: "10.5281/zenodo.24144757"
 repository-code: "https://github.com/gualbe/orange_gualbe_toolbox"

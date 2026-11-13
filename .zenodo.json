@@ -1,7 +1,7 @@
 {
   "title": "orange_gualbe_toolbox: utilidades visuales de ciencia de datos para Orange Data Mining",
   "upload_type": "software",
-  "description": "<p>Add-on de Orange Data Mining con utilidades visuales de ciencia de datos: balanceo de clases con SMOTE, importación robusta de archivos y URL, y evaluación y comparación estadística de modelos (Test &amp; Score Pro), con validación por ventana deslizante para series temporales.</p>\n<p>© 2026 Gualberto Asencio Cortés. Software libre bajo la licencia GPL-3.0-or-later, con los términos adicionales del fichero NOTICE. Incluye partes adaptadas de Orange Data Mining (Bioinformatics Laboratory, Universidad de Liubliana, GPL-3.0-or-later), que conservan su copyright, como indica el fichero NOTICE.</p>",
+  "description": "<p>Add-on de Orange Data Mining con utilidades visuales de ciencia de datos: balanceo de clases con SMOTE, importación robusta de archivos y URL, y evaluación y comparación estadística de modelos (Test &amp; Score Pro), con validación por ventana deslizante para series temporales, y visualización y edición de varias tablas (Data Table Pro).</p>\n<p>© 2026 Gualberto Asencio Cortés. Software libre bajo la licencia GPL-3.0-or-later, con los términos adicionales del fichero NOTICE. Incluye partes adaptadas de Orange Data Mining (Bioinformatics Laboratory, Universidad de Liubliana, GPL-3.0-or-later), que conservan su copyright, como indica el fichero NOTICE.</p>",
   "creators": [
     {
       "name": "Asencio Cortés, Gualberto"
