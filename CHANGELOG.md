@@ -3,6 +3,24 @@
 Cada versión se publica a la vez en GitHub (release `vX.Y.Z`) y en
 [PyPI](https://pypi.org/project/orange-gualbe-toolbox/).
 
+## 0.5.2 (2026-11-13)
+
+Correcciones de **Data Table Pro**:
+
+- Buscar y reemplazar vuelven a trabajar sobre el texto que se ve: en la 0.5.1, en las numéricas
+  que se ven redondeadas, actuaban sobre dígitos ocultos («3.14159» → «2» daba 2265358). Si un
+  reemplazo reescribe una celda que se veía redondeada, el widget avisa de que pierde los decimales
+  que no se veían.
+- Dos pestañas con la misma tabla ya no intercambian sus cambios al renombrar un nodo: el nombre
+  exacto tiene prioridad y la recuperación por contenido espera a que estén todas las entradas; si
+  es ambigua, no se aplica y se avisa.
+- Ordenar, «Orden original» o «Restablecer» con una selección envían cada salida una sola vez, y el
+  filtro ya no reenvía Data N.
+- La huella que comprueba los cambios guardados cubre toda la tabla (antes, una muestra).
+- El registro guarda las filas sueltas comprimidas: 150.000 filas alternas ocupan menos de 1 KB.
+- Formato de números idéntico al de Orange también con −0 y números grandes, fechas sin pérdida de
+  fracciones de segundo, y lo escrito en el filtro no se pierde al cambiar enseguida de pestaña.
+
 ## 0.5.1 (2026-11-13)
 
 Correcciones de **Data Table Pro**:

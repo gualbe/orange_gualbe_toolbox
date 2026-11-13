@@ -504,9 +504,13 @@ check(banco.w.replace_all()[1] == 0 and not pagina.state.log, "un reemplazo que 
 banco.w.find_regex = False
 banco.w.find_edit.setText("123456789")
 banco.w.replace_edit.setText("223456789")
+check(banco.w.replace_all()[1] == 0 and pagina.state.column("x").values[2] == 123456789.123,
+      "los dígitos que no se ven («1.23457e+08») no se buscan ni se reemplazan")
+banco.w.find_edit.setText("1.23457e+08")
+banco.w.replace_edit.setText("5")
 banco.w.replace_all()
-check(pagina.state.column("x").values[2] == 223456789.123 and pagina.state.column("x").values[0] == 3.14159265358,
-      "reemplazar en una numérica conserva los decimales que no se ven")
+check(pagina.state.column("x").values[2] == 5.0 and pagina.state.column("x").values[0] == 3.14159265358,
+      "reemplazar el texto visible entero; las celdas sin coincidencia conservan todos sus decimales")
 banco.w.find_edit.setText("5.0")
 check(engine.TableState(iris).find("5.0", cids=["sepal length"]) and
       len(engine.TableState(iris).find("5.0", cids=["sepal length"])) == 10,
@@ -643,6 +647,130 @@ check(celdas == 50 and pagina.state.column("iris").categories == ["Iris-setosa",
 banco.w.filter_edit.setText("")
 banco.w._apply_filter()
 check(banco.w.find_scope_combo.itemText(0) == "Toda la tabla", "sin filtro, vuelve a «Toda la tabla»")
+banco.cerrar()
+
+# ------------------------------------------------- correcciones de la 0.5.2 ----
+
+# 1. Buscar y reemplazar trabajan sobre el texto visible.
+normales = np.random.RandomState(0).normal(size=20000)
+estado = engine.TableState(Table.from_numpy(Domain([ContinuousVariable("n")]), normales[:, None]))
+visibles = int(sum("99" in t for t in estado.column("n").texts()))
+check(len(estado.find("99")) == visibles, f"buscar resalta solo lo que se ve ({len(estado.find('99'))} = {visibles})")
+pi = Table.from_numpy(Domain([ContinuousVariable("x")]), np.array([[3.14159265358], [2.71828182846], [5.5]]))
+estado = engine.TableState(pi)
+estado.replace("3.14159", "2", cids=["x"])
+check(estado.column("x").values[0] == 2.0 and estado.column("x").values[1] == 2.71828182846,
+      "reemplazar el texto visible entero da el número del reemplazo; las demás celdas no se tocan")
+estado = engine.TableState(pi)
+estado.replace("3.14", "9.99", cids=["x"])
+check(estado.column("x").values[0] == 9.99159 and estado.last_rounded == {"x": 1},
+      "una coincidencia parcial se aplica al texto visible y se cuenta la celda redondeada reescrita")
+banco = Banco().meter(pi)
+banco.w.find_edit.setText("3.14")
+banco.w.replace_edit.setText("9.99")
+banco.w.replace_all()
+check("se veían redondeadas" in banco.w.find_status.text(), "el widget avisa de las celdas redondeadas reescritas")
+banco.cerrar()
+
+# 2. Dos pestañas con la misma tabla: al renombrar una, cada una recupera lo suyo.
+banco = Banco().titulos("A", "B").meter(iris.copy(), iris.copy())
+banco.pagina(0).model.setData(banco.pagina(0).model.index(0, 0), "1")
+banco.pagina(1).model.setData(banco.pagina(1).model.index(0, 0), "2")
+banco.w._save_all()
+ajustes = banco.w.settingsHandler.pack_data(banco.w)
+banco.cerrar()
+invertido = dict(ajustes)
+invertido["stored_changes"] = dict(reversed(list(ajustes["stored_changes"].items())))
+for nombre, guardado in (("en su orden", ajustes), ("con las claves al revés", invertido)):
+    otra = Banco(guardado).titulos("A2", "B").meter(iris.copy(), iris.copy())
+    otra.enviar()
+    check((otra.salida["data_1"].X[0, 0], otra.salida["data_2"].X[0, 0]) == (1.0, 2.0),
+          f"nodo renombrado {nombre}: A2 recibe lo de A y B lo suyo")
+    otra.cerrar()
+otra = Banco(invertido)
+otra.titulos("A2")
+otra.w.insert_data(0, iris.copy())
+otra.w.handleNewSignals()
+check(not otra.w.pages[0].state.log and "varios cambios guardados" in otra.avisos(),
+      "con la entrada sola y dos candidatos iguales, no se adivina")
+otra.titulos("A2", "B")
+otra.w.insert_data(1, iris.copy())
+otra.w.handleNewSignals()
+otra.enviar()
+check((otra.salida["data_1"].X[0, 0], otra.salida["data_2"].X[0, 0]) == (1.0, 2.0),
+      "al llegar la otra entrada, cada una recibe lo suyo")
+otra.cerrar()
+
+# 3. Un solo envío por operación y nada de Data N al filtrar.
+banco = Banco().meter(iris.copy())
+pagina = banco.pagina(0)
+pagina.view.selectRow(3)
+app.processEvents()
+banco.enviar()
+for nombre, accion in (("ordenar", lambda: pagina.sort("sepal width", False)),
+                       ("orden original", pagina.restore_order),
+                       ("restablecer", banco.w.reset_page)):
+    banco.envios.clear()
+    accion()
+    app.processEvents()
+    banco.enviar()
+    check(banco.envios.get("data_1", 0) <= 1 and banco.envios.get("selected_data_1", 0) <= 1 and banco.envios.get("data_1", 0) == 1,
+          f"{nombre}: Data 1 se envía una sola vez ({banco.envios})")
+banco.envios.clear()
+banco.w.filter_edit.setText("setosa")
+banco.w._apply_filter()
+banco.w.filter_edit.setText("")
+banco.w._apply_filter()
+banco.enviar()
+check("data_1" not in banco.envios, f"cambiar o quitar el filtro no reenvía Data 1 ({banco.envios})")
+banco.cerrar()
+
+# 4. Huella de la tabla completa.
+cinco = Table.from_numpy(Domain([ContinuousVariable(f"n{i}") for i in range(5)]), np.random.RandomState(1).normal(size=(300_000, 5)))
+inicio = time.time()
+huella = engine.fingerprint(cinco)
+coste_huella = time.time() - inicio
+otra_tabla = cinco.copy()
+with otra_tabla.unlocked():
+    otra_tabla.X[[11, 777, 299_001], 3] += 1e-9
+check(engine.fingerprint(otra_tabla) != huella and engine.fingerprint(Table("housing")) == engine.fingerprint(Table("housing")),
+      f"la huella cubre toda la tabla: un cambio en cualquier fila se nota ({coste_huella * 1000:.0f} ms con 300.000 × 5)")
+disperso_grande = Table.from_numpy(Domain([ContinuousVariable(f"w{i}") for i in range(60000)]),
+                                   sp.random(20000, 60000, density=0.0005, format="csr", random_state=0))
+inicio = time.time()
+engine.fingerprint(disperso_grande)
+check(time.time() - inicio < 2, "la huella de una tabla dispersa enorme no la densifica")
+
+# 5. Filas sueltas compactas en el registro.
+estado = engine.TableState(Table.from_numpy(Domain([], metas=[StringVariable("s")]), np.empty((300_000, 0)),
+                                            metas=np.array([f"f{i}" for i in range(300_000)], dtype=object)[:, None]))
+inicio = time.time()
+estado.replace("f", "g", rows=np.arange(0, 300_000, 2))
+por_filas = time.time() - inicio
+import pickle
+tamano = len(pickle.dumps(estado.log))
+repetido = engine.TableState(estado.source)
+repetido.replay(estado.log)
+check(tamano < 10_000 and np.array_equal(repetido.column("s").values, estado.column("s").values) and por_filas < 1,
+      f"150.000 filas alternas: {tamano} bytes en el registro, {por_filas:.2f} s, y se repite igual")
+
+# 6. Formato idéntico al de Orange, fechas sin pérdida y filtro que no se pierde.
+for variable in (ContinuousVariable("a"), ContinuousVariable("b", number_of_decimals=2),
+                 ContinuousVariable("c", number_of_decimals=5)):
+    valores = np.array([0.0, -0.0, 123456789012.34567, -98765432109.9, 1e16, 2.675, 1.005])
+    estado = engine.TableState(Table.from_numpy(Domain([variable]), valores[:, None]))
+    check(list(estado.column(variable.name).texts()) == [variable.str_val(v) for v in valores],
+          f"formato igual que str_val con ceros con signo y números grandes ({variable.name})")
+textos = np.array(["2020-09-13 12:26:40.123456", "1999-12-31 23:59:59.999999", "2024-02-29 00:00:00.5"], dtype=object)
+mios = engine._parse_times(textos, np.ones(3, dtype=bool), None)[0]
+check(all(mios[i] == TimeVariable("t").parse(textos[i]) for i in range(3)), "las fechas con pandas dan los mismos segundos que Orange")
+banco = Banco().meter(iris.copy(), titanic.copy())
+banco.pagina(0)
+banco.w.filter_edit.setText("virginica")
+banco.w.tabs.setCurrentIndex(1)
+app.processEvents()
+check(banco.w.pages[0].filter_text == "virginica" and banco.w.pages[0].model.rowCount() == 50 and
+      banco.w.filter_edit.text() == "", "lo escrito en el filtro no se pierde al cambiar de pestaña enseguida")
 banco.cerrar()
 
 # --------------------------------------------------- tablas grandes ----

@@ -17,6 +17,7 @@ import copy
 import hashlib
 import math
 import re
+import zlib
 from datetime import timezone as dt_timezone
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
@@ -83,8 +84,13 @@ def _format_numbers(values, var):
     if fmt == "%g" or limit is None:
         return np.array(["?" if v != v else fmt % v for v in values.tolist()], dtype=object)
     wide = f"{{:.{decimals + 2}f}}"
-    return np.array(["?" if v != v else (wide.format(v) if abs(round(v, decimals) - v) > limit else fmt % v)
-                     for v in values.tolist()], dtype=object)
+    values = np.asarray(values, dtype=float)
+    # Orange redondea con numpy (np.float64.__round__), no con round de Python: con números
+    # grandes no dan lo mismo.
+    with np.errstate(invalid="ignore"):
+        wider = np.abs(np.round(values, decimals) - values) > limit
+    return np.array(["?" if v != v else (wide.format(v) if w else fmt % v)
+                     for v, w in zip(values.tolist(), wider.tolist())], dtype=object)
 
 
 def _exact(text, value):
@@ -203,7 +209,9 @@ class Column:
             fast = _format_times(values, self.have_date, self.have_time, self.tz)
             if fast is not None:
                 return fast
-        unique, inverse = np.unique(values, return_inverse=True)
+        # Por el patrón de bits: np.unique junta 0.0 y −0.0, que Orange escribe distinto.
+        bits, inverse = np.unique(np.ascontiguousarray(values, dtype=float).view(np.int64), return_inverse=True)
+        unique = bits.view(float)
         var = self.format_var()
         if self.kind == NUMERIC:
             formatted = _format_numbers(unique, var)
@@ -325,27 +333,33 @@ def _signature(table):
     return [len(table)] + [[var.name, type(var).__name__] for var in domain.variables + domain.metas]
 
 
-FINGERPRINT_ROWS = 2000
-
-
 def fingerprint(table):
-    """Huella barata del contenido: una muestra de filas repartidas por toda la tabla.
+    """Huella del contenido completo: X, Y y metas por bloques, sin copiar la tabla.
 
-    No usa los ids, que Orange cambia cada vez que vuelve a leer un archivo.
+    No usa los ids, que Orange cambia cada vez que vuelve a leer un archivo. Las tablas
+    dispersas se resumen por sus vectores internos, sin densificarlas.
     """
-    n = len(table)
-    if not n:
-        return "vacía"
-    rows = np.unique(np.linspace(0, n - 1, min(n, FINGERPRINT_ROWS)).round().astype(int))
-    digest = hashlib.sha1()
+    digest = hashlib.blake2b(digest_size=12)
+    digest.update(str(len(table)).encode())
     for block in (table.X, table.Y, table.metas):
-        part = block[rows] if not sp.issparse(block) else block[rows].toarray()
-        part = np.asarray(part)
-        if part.dtype == object:
-            digest.update("\x1f".join(map(str, part.ravel().tolist())).encode("utf-8", "replace"))
+        if sp.issparse(block):
+            block = block.tocsr()
+            for part in (block.data, block.indices, block.indptr):
+                digest.update(np.ascontiguousarray(part).tobytes())
+            digest.update(str(block.shape).encode())
+            continue
+        block = np.asarray(block)
+        digest.update(str(block.shape).encode())
+        if block.dtype == object:
+            import pandas as pd
+            columns = block.T if block.ndim == 2 else block.reshape(1, -1)
+            for column in columns:
+                hashed = pd.util.hash_array(np.array(["" if v is None else str(v) for v in column], dtype=object),
+                                            categorize=True)
+                digest.update(hashed.tobytes())
         else:
-            digest.update(np.ascontiguousarray(part, dtype=float).tobytes())
-    return digest.hexdigest()[:16]
+            digest.update(np.ascontiguousarray(block, dtype=float).tobytes())
+    return digest.hexdigest()
 
 
 @dataclass
@@ -372,6 +386,7 @@ class TableState:
         self._undo, self._redo = [], []
         self.version = 0             # cambia con cada modificación de datos u orden
         self._texts = {}             # cid → (versión, textos de todas las filas)
+        self.last_rounded = {}       # último reemplazo: celdas redondeadas reescritas por columna
 
     # ------------------------------------------------------------ carga ----
 
@@ -423,9 +438,10 @@ class TableState:
         return cached[1]
 
     def _texts_of(self, column, rows):
+        """Textos visibles del ámbito: buscar y reemplazar actúan sobre lo que se ve."""
         if rows is None or len(rows) == self.n_rows:
-            return self.column_texts(column.cid, full=True)
-        return column.edit_texts(rows)
+            return self.column_texts(column.cid)
+        return column.texts(rows)
 
     def column(self, cid):
         for column in self.columns:
@@ -580,8 +596,9 @@ class TableState:
         for column in columns:
             texts = self._texts_of(column, rows)
             known = ~column.unknown_mask(rows)
-            matched = np.array([bool(known[i]) and compiled.search(t) is not None for i, t in enumerate(texts)],
-                               dtype=bool)
+            codes, unique = _factorize(texts)
+            hit = np.array([compiled.search(t) is not None for t in unique], dtype=bool)  # una vez por texto
+            matched = known & hit[codes]
             for row in rows[matched]:
                 hits.append((int(row), column.cid))
         order_index = {c.cid: i for i, c in enumerate(self.columns)}
@@ -598,7 +615,8 @@ class TableState:
             replacement_fn = lambda _match: literal  # noqa: E731  (sin interpretar barras)
         rows, columns = self._scope(rows, cids)
         before = self._begin([c.cid for c in columns])
-        total, changed, rejected = 0, 0, {}
+        total, changed, rejected, rounded = 0, 0, {}, {}
+        self.last_rounded = {}
         for column in columns:
             if column.kind == CATEGORICAL:
                 count, cells, bad = self._replace_categorical(column, compiled, replacement_fn, rows, before)
@@ -607,27 +625,25 @@ class TableState:
                 if bad:
                     rejected[column.name] = bad
                 continue
-            # En las numéricas se reemplaza sobre el valor completo, nunca sobre el texto redondeado.
+            # Sobre el texto visible, que es lo que el usuario ve y espera, una vez por texto distinto.
             texts = self._texts_of(column, rows)
             known = ~column.unknown_mask(rows)
-            positions, new_texts, counts = [], [], []
-            for i in np.flatnonzero(known):
-                text = texts[i]
+            codes, unique = _factorize(texts)
+            new_unique = np.empty(len(unique), dtype=object)
+            unique_counts = np.zeros(len(unique), dtype=int)
+            for k, text in enumerate(unique):
                 try:
-                    new_text, count = compiled.subn(replacement_fn, text)
+                    new_unique[k], unique_counts[k] = compiled.subn(replacement_fn, text)
                 except (re.error, IndexError) as error:
                     self._restore(before)
                     self.version -= 1
                     raise OperationError(f"El reemplazo no es válido: {error}.") from None
-                if count and new_text != text:
-                    positions.append(i)
-                    new_texts.append(new_text)
-                    counts.append(count)
-            if not positions:
+            touched = (unique_counts > 0) & (new_unique != unique)
+            positions = np.flatnonzero(known & touched[codes])
+            if not len(positions):
                 continue
-            positions = np.asarray(positions, dtype=int)
-            counts = np.asarray(counts, dtype=int)
-            values, valid = _parse_many(column, np.asarray(new_texts, dtype=object))
+            counts = unique_counts[codes[positions]]
+            values, valid = _parse_many(column, new_unique[codes[positions]])
             bad = int((~valid).sum())
             if bad:
                 rejected[column.name] = bad
@@ -639,6 +655,11 @@ class TableState:
                 same = (old == values) | (np.isnan(old) & np.isnan(values))
                 differs = valid & ~same  # si el número no cambia, la celda no se toca
             if differs.any():
+                if column.kind == NUMERIC:
+                    # Celdas que se veían redondeadas: el resultado parte del texto visible y pierde
+                    # los decimales ocultos. No se hace en silencio: se cuentan para avisar.
+                    exact = column.edit_texts(targets[differs]) == column.texts(targets[differs])
+                    rounded[column.name] = rounded.get(column.name, 0) + int((~exact).sum())
                 column.values[targets[differs]] = values[differs] if column.kind != STRING else \
                     np.asarray(values, dtype=object)[differs]
                 column.mark_edited(targets[differs])
@@ -648,6 +669,7 @@ class TableState:
             self._restore(before)
             self.version -= 1
             return 0, 0, rejected
+        self.last_rounded = {name: count for name, count in rounded.items() if count}
         if record:
             self._commit(before, dict(op="replace", pattern=pattern, replacement=replacement, regex=bool(regex),
                                       case=bool(case), rows=None if rows is None else _rows_or_none(rows, self.n_rows),
@@ -951,25 +973,36 @@ def _names(names):
 
 
 def _rows_or_none(rows, n_rows):
-    """Filas para el registro, comprimidas en tramos [inicio, fin] (None si son todas)."""
-    rows = np.unique(np.asarray(rows, dtype=int))
+    """Filas para el registro (None si son todas), comprimidas.
+
+    Se guardan las diferencias entre filas consecutivas, comprimidas con zlib: 150.000 filas
+    alternas ocupan unos pocos bytes en lugar de megas.
+    """
+    rows = np.unique(np.asarray(rows, dtype=np.int64))
     if len(rows) == n_rows:
         return None
-    if not len(rows):
-        return {"ranges": []}
-    breaks = np.flatnonzero(np.diff(rows) > 1)
-    starts, stops = rows[np.r_[0, breaks + 1]], rows[np.r_[breaks, len(rows) - 1]]
-    return {"ranges": [[int(a), int(b)] for a, b in zip(starts, stops)]}
+    deltas = np.diff(np.r_[0, rows]).astype("<u4")
+    return {"packed": zlib.compress(deltas.tobytes(), 9), "count": int(len(rows))}
 
 
 def _expand_rows(rows):
-    """Admite una lista de filas, un vector o los tramos guardados en el registro."""
+    """Admite una lista de filas, un vector, los tramos de la 0.5.1 o las filas comprimidas."""
     if isinstance(rows, dict):
+        if "packed" in rows:
+            deltas = np.frombuffer(zlib.decompress(rows["packed"]), dtype="<u4").astype(np.int64)
+            return np.cumsum(deltas)
         ranges = rows.get("ranges", [])
         if not ranges:
             return np.arange(0, dtype=int)
         return np.concatenate([np.arange(a, b + 1) for a, b in ranges]).astype(int)
     return np.asarray(rows, dtype=int).ravel()
+
+
+def _factorize(texts):
+    """Códigos y textos distintos (sin ordenar: más rápido que np.unique con cadenas)."""
+    import pandas as pd
+    codes, unique = pd.factorize(np.asarray(texts, dtype=object), sort=False)
+    return codes, np.asarray(unique, dtype=object)
 
 
 def _drop_unused(categories, values):
@@ -1066,7 +1099,9 @@ def _parse_times(texts, mask, tz):
     if plain.any():
         import pandas as pd
         parsed = pd.to_datetime(pd.Series(subset[plain]), format="ISO8601", errors="coerce")
-        seconds = parsed.to_numpy(dtype="datetime64[ns]").astype("int64") / 1e9
+        nanoseconds = parsed.to_numpy(dtype="datetime64[ns]").astype("int64")
+        # Segundos enteros y fracción por separado: dividir el total entre 1e9 pierde ~2e-7 s.
+        seconds = (nanoseconds // 1_000_000_000).astype(float) + (nanoseconds % 1_000_000_000) / 1e9
         seconds[parsed.isna().to_numpy()] = np.nan
         offset = _offset_seconds(tz) or 0.0
         values[indices[plain]] = seconds - offset

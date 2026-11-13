@@ -320,8 +320,8 @@ class Page(QWidget):
         if not keep_matches:
             self.matches, self.match_index = [], -1
             self.model.matches, self.model.current = {}, None
-        self._output = None
-        self._selected = None
+        # Las salidas se guardan por versión del estado: no hace falta tirarlas (y tirarlas haría
+        # que se enviaran dos veces tablas idénticas).
         if not layout and not self.filter_text and len(self.model.rows) == (self.state.n_rows if self.state else 0):
             self.model.repaint()
             return
@@ -608,6 +608,8 @@ class OWDataTablePro(OWWidget):
         self._load_errors = {}      # clave de la pestaña → mensaje (se acumulan, no se pisan)
         self._restore_notes = {}
         self._sent = {}             # salida → último objeto enviado
+        self._filter_page = None
+        self._filter_pending = None
         self._save_timer = QTimer(self, singleShot=True, interval=0)
         self._save_timer.timeout.connect(self._save_all)
         self._filter_timer = QTimer(self, singleShot=True, interval=FILTER_DEBOUNCE_MS)
@@ -731,7 +733,7 @@ class OWDataTablePro(OWWidget):
         self.filter_edit.setToolTip("Muestra solo las filas que contienen este texto en alguna columna. "
                                     "No cambia las salidas Data, pero mientras está activo, buscar, "
                                     "reemplazar y el prefijo actúan solo sobre las filas visibles.")
-        self.filter_edit.textChanged.connect(lambda _: self._filter_timer.start())
+        self.filter_edit.textChanged.connect(self._filter_typed)
         box.layout().addWidget(self.filter_edit)
         gui.checkBox(box, self, "select_full_rows", "Seleccionar filas completas", callback=self._selection_mode)
         gui.checkBox(box, self, "show_bars", "Barras en las columnas numéricas", callback=self._repaint)
@@ -812,23 +814,42 @@ class OWDataTablePro(OWWidget):
         self.commit.deferred()
 
     def _restore(self, page, identifier):
-        """Repite los cambios guardados con el workflow para esta pestaña, si son suyos.
+        """Repite los cambios guardados con el nombre exacto de esta pestaña.
 
-        Se buscan por el nombre de la pestaña y, si no están (nodo renombrado, o «X (2)» que ha
-        pasado a «X»), por una tabla con la misma forma y la misma huella de contenido.
+        Si no hay, la pestaña queda pendiente: al final de la ronda de entradas
+        (`_restore_by_content`) se buscan por contenido, cuando ya están todas las pestañas y
+        ninguna puede quedarse con los cambios de otra.
         """
         stored = dict(self.stored_changes or {})
+        saved = stored.get(identifier)
+        page.pending_restore = saved is None and bool(stored)
+        if saved is not None:
+            self._apply_saved(page, identifier, identifier, saved, stored)
+
+    def _restore_by_content(self):
+        """Nodo renombrado (o «X (2)» que pasa a «X»): cambios sin dueño con la misma huella."""
+        stored = dict(self.stored_changes or {})
+        names = {p.identifier for p in self.pages}
+        for page in self.pages:
+            if not getattr(page, "pending_restore", False):
+                continue
+            if page.state is None or page.state.log:
+                page.pending_restore = False  # ya tiene cambios propios: no se pisan
+                continue
+            candidates = [key for key, entry in stored.items()
+                          if key not in names and entry.get("signature") == page.state.signature
+                          and entry.get("fingerprint") == page.state.fingerprint]
+            if len(candidates) == 1:
+                page.pending_restore = False
+                self._apply_saved(page, page.identifier, candidates[0], stored[candidates[0]], stored)
+                stored = dict(self.stored_changes or {})
+            elif len(candidates) > 1:
+                self._restore_notes[page.key] = (
+                    f"Hay varios cambios guardados ({', '.join(f'«{k}»' for k in candidates[:3])}) que podrían ser "
+                    f"de «{page.identifier}», con la misma tabla: no se aplica ninguno para no equivocarse.")
+
+    def _apply_saved(self, page, identifier, key, saved, stored):
         state = page.state
-        key, saved = identifier, stored.get(identifier)
-        if saved is None:
-            claimed = {p.identifier for p in self.pages if p is not page}
-            for other, entry in stored.items():
-                if other not in claimed and entry.get("signature") == state.signature \
-                        and entry.get("fingerprint") == state.fingerprint:
-                    key, saved = other, entry
-                    break
-        if not saved:
-            return
         if saved.get("signature") != state.signature:
             self._restore_notes[page.key] = (f"La tabla «{identifier}» ha cambiado (columnas o número de filas): se "
                                              "descartan los cambios que se guardaron con el workflow.")
@@ -851,6 +872,7 @@ class OWDataTablePro(OWWidget):
             if problems:
                 self._restore_notes[page.key] = (f"«{identifier}»: no se han podido repetir {len(problems)} cambios "
                                                  f"guardados ({problems[0]}).")
+            self._relabel()
         self.stored_changes = stored
 
     def _show_messages(self):
@@ -887,6 +909,7 @@ class OWDataTablePro(OWWidget):
         return unique
 
     def handleNewSignals(self):
+        self._restore_by_content()
         self._show_messages()
         self.commit.now()
 
@@ -916,6 +939,9 @@ class OWDataTablePro(OWWidget):
 
     def _tab_changed(self, _):
         self.find_status.setText("")
+        if self._filter_timer.isActive():  # lo escrito en el filtro no se pierde al cambiar de pestaña
+            self._filter_pending = self.filter_edit.text().strip()
+            self._apply_filter()
         page = self.current_page()
         self.filter_edit.blockSignals(True)
         self.filter_edit.setText(page.filter_text if page is not None else "")
@@ -993,11 +1019,18 @@ class OWDataTablePro(OWWidget):
         if self.pages.index(page) < MAX_OUTPUTS:
             self.commit.deferred()
 
+    def _filter_typed(self, _):
+        self._filter_page = self.current_page()  # lo escrito es de esta pestaña aunque se cambie pronto
+        self._filter_timer.start()
+
     def _apply_filter(self):
-        page = self.current_page()
-        if page is None:
+        self._filter_timer.stop()
+        page = getattr(self, "_filter_page", None) or self.current_page()
+        self._filter_page = None
+        if page is None or page not in self.pages:
             return
-        page.filter_text = self.filter_edit.text().strip()
+        page.filter_text = self._filter_pending if self._filter_pending is not None else self.filter_edit.text().strip()
+        self._filter_pending = None
         page.refresh(keep_matches=True, layout=True)
         self._scope_labels()
         self._sync_controls()
@@ -1096,6 +1129,11 @@ class OWDataTablePro(OWWidget):
             if rejected:
                 text += " Rechazados por no ser válidos para su tipo: " + ", ".join(
                     f"{name}: {count}" for name, count in rejected.items()) + "."
+            rounded = page.state.last_rounded
+            if rounded:
+                text += (" Atención: " + ", ".join(f"{name}: {count}" for name, count in rounded.items())
+                         + " celdas se veían redondeadas y se han reescrito a partir del texto visible: pierden "
+                           "los decimales que no se veían (Ctrl+Z lo deshace).")
             self.find_status.setText(text)
             self.Information.result(text)
             if cells:
@@ -1198,7 +1236,6 @@ class OWDataTablePro(OWWidget):
         """Tras cualquier cambio: rótulos, controles, guardado y salidas."""
         if data:
             self.Warning.edit.clear()
-        page._output = None  # pylint: disable=protected-access
         self._relabel()
         self._sync_controls()
         self._save_timer.start()

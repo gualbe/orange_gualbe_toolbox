@@ -105,9 +105,13 @@ celdas.
 - **Ámbito**: toda la tabla, las columnas seleccionadas o las filas seleccionadas. **Con el filtro
   rápido activo, solo cuentan las filas visibles**, y el ámbito lo dice («Filas visibles (filtro)»).
 
-Se busca en el texto que se ve en cada celda; en las numéricas cuyo texto redondea el valor, en el
-valor completo, así que un reemplazo nunca pierde decimales. Una celda cuyo número no cambia no se
-toca. En una columna numérica o de fecha, un reemplazo que no da un valor válido se rechaza y el
+Se busca y se reemplaza en el **texto que se ve** en cada celda. En una numérica, si la coincidencia
+es el texto visible entero (``3.14159`` → ``2``), el resultado es el número del reemplazo; si es una
+parte, el reemplazo se aplica al texto visible. Las celdas sin coincidencia no se tocan y conservan
+todos sus decimales, y tampoco se toca una celda cuyo número no cambia. Si una celda se veía
+redondeada (por ejemplo ``3.14159`` cuando vale ``3.14159265358``) y el reemplazo la reescribe, pierde
+los decimales que no se veían: el widget lo avisa con el número de celdas afectadas y **Ctrl+Z** lo
+deshace. En una columna numérica o de fecha, un reemplazo que no da un valor válido se rechaza y el
 widget dice cuántos. En una categórica, el valor nuevo ocupa el lugar del antiguo en la lista de
 valores, y reemplazar por nada o por ``?`` deja el valor como desconocido.
 
@@ -160,12 +164,14 @@ Cambios guardados
 -----------------
 
 Los cambios de cada pestaña (ediciones, reemplazos, nombres, tipos, roles, orden y colores) se
-guardan con el workflow, con el nombre de la pestaña y una huella del contenido de la tabla. Al
-volver a abrirlo:
+guardan con el workflow, con el nombre de la pestaña y una huella de **todo** el contenido de la
+tabla (todas sus celdas). Al volver a abrirlo:
 
 - si llega la misma tabla (mismas columnas, mismo número de filas y mismos datos), se repiten y se
   pueden deshacer;
-- si se ha renombrado el nodo de origen, se reconocen por el contenido y se aplican igual;
+- si se ha renombrado el nodo de origen, se reconocen por el contenido, una vez han llegado todas
+  las entradas, y se aplican igual. Si hay varias pestañas con la misma tabla y no se puede saber de
+  cuál eran, no se aplican y el widget lo avisa;
 - si la tabla ha cambiado, aunque tenga la misma forma, se descartan con un aviso, para no aplicar
   ediciones a filas equivocadas;
 - si hay cambios guardados que no corresponden a ninguna entrada conectada, el widget lo avisa y
@@ -184,11 +190,14 @@ Tablas grandes
 La vista solo lee las celdas que se ven y las operaciones trabajan por columnas enteras. Medido
 con 300.000 filas y diez columnas en un portátil:
 
-- abrir la tabla, ordenar, convertir de tipo (también fechas) o reemplazar en una columna, o en
-  150.000 filas seleccionadas: menos de un segundo;
+- abrir la tabla, ordenar, convertir de tipo (también fechas) o reemplazar en una columna: menos de
+  medio segundo;
+- reemplazar en 150.000 filas seleccionadas de diez columnas: menos de un segundo;
 - buscar en toda la tabla: unos 2 segundos la primera vez y menos de 1 las siguientes (los textos se
   guardan hasta el siguiente cambio);
-- filtrar: menos de un segundo.
+- filtrar: menos de un segundo;
+- calcular la huella de la tabla al abrirla: centésimas de segundo con 300.000 filas, y unas décimas
+  con una tabla de 2.000 × 20.000 o una dispersa enorme.
 
 Una tabla dispersa se muestra y se emite como densa (el widget
 lo avisa) siempre que no supere 50 millones de celdas.
