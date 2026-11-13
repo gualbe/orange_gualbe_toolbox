@@ -24,7 +24,8 @@ from AnyQt.QtWidgets import QApplication
 from Orange.data import ContinuousVariable, DiscreteVariable, Domain, StringVariable, Table, TimeVariable
 
 from orangecontrib.orange_gualbe_toolbox.widgets import _dtp_engine as engine
-from orangecontrib.orange_gualbe_toolbox.widgets.owdatatablepro import OWDataTablePro, SCOPE_ALL, SCOPE_COLUMNS, SCOPE_ROWS
+from orangecontrib.orange_gualbe_toolbox.widgets.owdatatablepro import (MAX_OUTPUTS, OWDataTablePro, SCOPE_ALL,
+                                                                         SCOPE_COLUMNS, SCOPE_ROWS)
 
 warnings.simplefilter("ignore")
 app = QApplication.instance() or QApplication([])
@@ -64,7 +65,7 @@ class Banco:
                 setattr(self.w, nombre, valor)
             self.w._selection_mode()
         self.salida, self.envios = {}, {}
-        for i in range(1, 6):
+        for i in range(1, MAX_OUTPUTS + 1):
             for nombre in (f"data_{i}", f"selected_data_{i}"):
                 getattr(self.w.Outputs, nombre).send = self._capturar(nombre)
 
@@ -133,13 +134,21 @@ iris, titanic, zoo, housing = Table("iris"), Table("titanic"), Table("zoo"), Tab
 
 # ------------------------------------------------------- entradas y salidas ----
 
+check([o.name for o in OWDataTablePro.get_signals("outputs")] ==
+      ["Selected Data 1", "Data 1", "Selected Data 2", "Data 2"] and MAX_OUTPUTS == 2,
+      "el widget declara exactamente dos pares de salidas")
 banco = Banco().titulos("Flores", "Barco", "Animales").meter(iris, titanic, zoo)
-check([banco.w.tabs.tabText(i) for i in range(3)] == ["① Flores", "② Barco", "③ Animales"],
-      "una pestaña por entrada, con su número de salida y el título del nodo")
-check([banco.salida[f"data_{i}"].name for i in (1, 2, 3)] == ["Flores", "Barco", "Animales"] and
-      banco.salida["data_4"] is None and banco.salida["data_5"] is None,
+check([banco.w.tabs.tabText(i) for i in range(3)] == ["① Flores", "② Barco", "— Animales"],
+      "una pestaña por entrada, con su número de salida; la tercera, sin número")
+check([banco.salida[f"data_{i}"].name for i in (1, 2)] == ["Flores", "Barco"],
       "Data N en el orden de las pestañas, con el título del nodo como nombre")
-check(all(banco.salida[f"selected_data_{i}"] is None for i in range(1, 6)), "sin selección, Selected Data N es None")
+check("3 tablas" in banco.avisos() and "dos primeras tablas tienen salida" in banco.avisos(),
+      "más de dos entradas: aviso con el texto ajustado")
+check("Sin salida" in banco.w.tabs.tabToolTip(2), "la tercera pestaña dice que no tiene salida")
+check(all(banco.salida[f"selected_data_{i}"] is None for i in range(1, MAX_OUTPUTS + 1)), "sin selección, Selected Data N es None")
+tercera = banco.pagina(2)
+tercera.model.setData(tercera.model.index(0, 0), "x")
+check(tercera.state.log, "la tercera pestaña se puede editar")
 sin_titulo = Banco().meter(iris)
 check(sin_titulo.salida["data_1"].name == "iris" and sin_titulo.w.tabs.tabText(0) == "① iris",
       "sin título de nodo, se usa el nombre de la tabla")
@@ -148,23 +157,35 @@ salida = banco.salida["data_2"]
 check(salida.domain == titanic.domain and np.array_equal(salida.X, titanic.X) and np.array_equal(salida.Y, titanic.Y)
       and np.array_equal(salida.ids, titanic.ids), "sin cambios, Data N es igual a la entrada (dominio, valores e ids)")
 check("Data 2 y Selected Data 2" in banco.w.tabs.tabToolTip(1), "la pestaña dice qué salidas le corresponden")
+banco.w._save_all()
+tres_ajustes = banco.w.settingsHandler.pack_data(banco.w)
 banco.titulos("Barco", "Animales")  # Orange actualiza los enlaces antes de avisar al widget
 banco.w.remove_data(0)
 banco.w.handleNewSignals()
+primera_columna = zoo.domain.attributes[0]
 check(banco.salida["data_1"].name == "Barco" and banco.salida["data_2"].name == "Animales" and
-      banco.salida["data_3"] is None, "al quitar un enlace, las salidas se recolocan y la última se vacía")
-check(banco.w.tabs.tabText(0) == "① Barco", "los distintivos se renumeran")
+      "x" in banco.salida["data_2"].domain[primera_columna.name].values,
+      "al quitar un enlace, la tercera pestaña sube a la salida 2 con sus cambios")
+check([banco.w.tabs.tabText(i) for i in range(2)] == ["① Barco", "② Animales ✎"] and not banco.avisos(),
+      "los distintivos se renumeran y desaparece el aviso")
+banco.titulos("Animales")
+banco.w.remove_data(0)
+banco.w.handleNewSignals()
+check(banco.salida["data_1"].name == "Animales" and banco.salida["data_2"] is None, "y la salida que queda libre se vacía")
 banco.cerrar()
+restaurado = Banco(tres_ajustes).titulos("Flores", "Barco", "Animales").meter(iris, titanic, zoo)
+check(not restaurado.errores() and restaurado.w.pages[2].state.log and "3 tablas" in restaurado.avisos(),
+      "los ajustes guardados con más de dos pestañas se restauran sin errores")
+restaurado.cerrar()
 
-muchas = Banco().meter(*[iris] * 7)
-check("7 tablas" in muchas.avisos() and muchas.w.tabs.tabText(5).startswith("—") and
-      all(muchas.salida[f"data_{i}"] is not None for i in range(1, 6)), "más de 5 entradas: aviso, y la sexta sin salida")
-check([muchas.salida[f"data_{i}"].name for i in range(1, 6)] == ["iris", "iris (2)", "iris (3)", "iris (4)", "iris (5)"],
+muchas = Banco().meter(*[iris] * 4)
+check([muchas.salida[f"data_{i}"].name for i in range(1, MAX_OUTPUTS + 1)] == ["iris", "iris (2)"] and
+      [muchas.w.tabs.tabText(i) for i in range(4)] == ["① iris", "② iris (2)", "— iris (3)", "— iris (4)"],
       "identificadores únicos con la misma tabla repetida")
-muchas.w.remove_data(6)
-muchas.w.remove_data(5)
+muchas.w.remove_data(3)
+muchas.w.remove_data(2)
 muchas.w.handleNewSignals()
-check(not muchas.avisos(), "con 5 entradas desaparece el aviso")
+check(not muchas.avisos(), "con dos entradas desaparece el aviso")
 muchas.cerrar()
 
 vacia = Banco().meter(iris[:0], None)

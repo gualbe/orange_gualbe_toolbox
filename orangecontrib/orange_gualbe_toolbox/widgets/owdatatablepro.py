@@ -28,7 +28,10 @@ from Orange.widgets.widget import Msg, MultiInput, Output, OWWidget
 
 from orangecontrib.orange_gualbe_toolbox.widgets import _dtp_engine as engine
 
-MAX_OUTPUTS = 5
+# Número de pares de salidas (Data N y Selected Data N). Todo lo demás depende de esta constante.
+MAX_OUTPUTS = 2
+FIRST_ONES = {1: "la primera tabla tiene", 2: "las dos primeras tablas tienen", 3: "las tres primeras tablas tienen",
+              4: "las cuatro primeras tablas tienen", 5: "las cinco primeras tablas tienen"}
 
 
 def _comparable(entry):
@@ -44,7 +47,20 @@ def _comparable(entry):
 
 def _same_fingerprint(entry, state):
     return _comparable(entry) and entry.get("fingerprint") == state.fingerprint
-BADGES = "①②③④⑤"
+BADGES = "①②③④⑤⑥⑦⑧⑨"[:MAX_OUTPUTS]
+OUTPUT_RANGE = (f"Data 1 y Selected Data 1" if MAX_OUTPUTS == 1
+                else f"Data 1-{MAX_OUTPUTS} y Selected Data 1-{MAX_OUTPUTS}")
+LIMIT_TEXT = FIRST_ONES.get(MAX_OUTPUTS, f"las {MAX_OUTPUTS} primeras tablas tienen")
+
+
+class _Outputs:
+    """Pares de salidas numeradas, declarados a partir de MAX_OUTPUTS (Orange no admite nombres dinámicos)."""
+
+
+for _number in range(1, MAX_OUTPUTS + 1):
+    setattr(_Outputs, f"selected_data_{_number}", Output(f"Selected Data {_number}", Table, default=_number == 1))
+    setattr(_Outputs, f"data_{_number}", Output(f"Data {_number}", Table))
+del _number
 SCOPE_ALL, SCOPE_COLUMNS, SCOPE_ROWS = range(3)
 SCOPES = ("Toda la tabla", "Columnas seleccionadas", "Filas seleccionadas")
 BarRole = Qt.UserRole + 1
@@ -586,24 +602,15 @@ class OWDataTablePro(OWWidget):
     class Inputs:
         data = MultiInput("Data", Table)
 
-    class Outputs:
-        selected_data_1 = Output("Selected Data 1", Table, default=True)
-        data_1 = Output("Data 1", Table)
-        selected_data_2 = Output("Selected Data 2", Table)
-        data_2 = Output("Data 2", Table)
-        selected_data_3 = Output("Selected Data 3", Table)
-        data_3 = Output("Data 3", Table)
-        selected_data_4 = Output("Selected Data 4", Table)
-        data_4 = Output("Data 4", Table)
-        selected_data_5 = Output("Selected Data 5", Table)
-        data_5 = Output("Data 5", Table)
+    Outputs = _Outputs
 
     class Error(OWWidget.Error):
         operation = Msg("{}")
         load = Msg("{}")
 
     class Warning(OWWidget.Warning):
-        too_many = Msg("Hay {} tablas de entrada: solo las 5 primeras tienen salida (Data 1-5 y Selected Data 1-5).")
+        too_many = Msg("Hay {} tablas de entrada: solo " + LIMIT_TEXT + " salida (" + OUTPUT_RANGE + "). Las "
+                       "demás se ven y se editan, sin salida.")
         edit = Msg("{}")
         restore = Msg("{}")
         orphans = Msg("{}")
@@ -961,7 +968,7 @@ class OWDataTablePro(OWWidget):
             self.tabs.setTabText(self.tabs.indexOf(page), f"{badge} {name}{modified}")
             self.tabs.setTabToolTip(self.tabs.indexOf(page),
                                     f"Salidas: Data {index + 1} y Selected Data {index + 1}" if index < MAX_OUTPUTS
-                                    else "Sin salida: solo las 5 primeras tablas tienen salida.")
+                                    else f"Sin salida: solo {LIMIT_TEXT} salida.")
         self.Warning.too_many(len(self.pages), shown=len(self.pages) > MAX_OUTPUTS)
         self.tabs.setVisible(bool(self.pages))
         self.placeholder.setVisible(not self.pages)
@@ -1002,7 +1009,7 @@ class OWDataTablePro(OWWidget):
             return
         index = self.pages.index(page)
         outputs = (f"Salidas: Data {index + 1} y Selected Data {index + 1}." if index < MAX_OUTPUTS
-                   else "Sin salida (solo las 5 primeras tablas).")
+                   else f"Sin salida (solo {LIMIT_TEXT} salida).")
         shown = len(page.model.rows)
         filtered = f" ({shown} visibles con el filtro)" if shown != state.n_rows else ""
         notes = " ".join(state.notes)
@@ -1368,9 +1375,8 @@ class OWDataTablePro(OWWidget):
 
     @gui.deferred
     def commit(self):
-        slots = [(self.Outputs.data_1, self.Outputs.selected_data_1), (self.Outputs.data_2, self.Outputs.selected_data_2),
-                 (self.Outputs.data_3, self.Outputs.selected_data_3), (self.Outputs.data_4, self.Outputs.selected_data_4),
-                 (self.Outputs.data_5, self.Outputs.selected_data_5)]
+        slots = [(getattr(self.Outputs, f"data_{n}"), getattr(self.Outputs, f"selected_data_{n}"))
+                 for n in range(1, MAX_OUTPUTS + 1)]
         if not self.pages and not self._sent:
             return  # sin entradas todavía: no hay nada que enviar (todas las salidas ya son None)
         notes = []

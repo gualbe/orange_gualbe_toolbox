@@ -21,7 +21,7 @@ Salidas numeradas
 -----------------
 
 Orange no permite salidas con un nombre que cambie según lo conectado, así que el widget
-tiene **cinco pares de salidas numeradas**, en el orden de las pestañas:
+tiene **dos pares de salidas numeradas**, en el orden de las pestañas:
 
 .. list-table::
    :header-rows: 1
@@ -29,25 +29,25 @@ tiene **cinco pares de salidas numeradas**, en el orden de las pestañas:
 
    * - Salida
      - Qué lleva
-   * - **Data 1** … **Data 5**
-     - La tabla completa de la pestaña 1 … 5, con todos los cambios y en el orden de filas y
+   * - **Data 1** y **Data 2**
+     - La tabla completa de la pestaña 1 o 2, con todos los cambios y en el orden de filas y
        columnas que se ve. El filtro rápido no la recorta.
-   * - **Selected Data 1** … **Selected Data 5**
+   * - **Selected Data 1** y **Selected Data 2**
      - Las filas seleccionadas en esa pestaña, con los mismos cambios. Sin selección no envía
        nada, como el Data Table de Orange.
 
-El número de cada pestaña aparece en un distintivo: **①**, **②**… La pestaña ① va a
-*Data 1* y *Selected Data 1*, la ② a *Data 2* y *Selected Data 2*, etc. El panel *Tabla*
-lo repite para la pestaña abierta y el ratón sobre la pestaña también lo dice.
+El número de cada pestaña aparece en un distintivo: **①** o **②**. La pestaña ① va a
+*Data 1* y *Selected Data 1*, y la ② a *Data 2* y *Selected Data 2*. El panel *Tabla* lo
+repite para la pestaña abierta y el ratón sobre la pestaña también lo dice.
 
 Cada tabla de salida se llama como el **nodo del que viene** (por ejemplo «Flores» si el
 nodo *File* se ha renombrado así) o, si no se puede saber, como la tabla de entrada. Así es
 fácil reconocerla después en otros widgets.
 
-- Con **más de cinco** entradas, las que pasan de cinco se ven y se pueden editar, pero no
+- Con **más de dos** entradas, la tercera y las siguientes se ven y se pueden editar, pero no
   tienen salida: el widget lo avisa y su pestaña lleva «—» en lugar de número.
-- Al **quitar un enlace**, las pestañas siguientes suben un puesto y sus salidas también; la
-  última salida que queda libre se vacía.
+- Al **quitar un enlace**, las pestañas siguientes suben un puesto y sus salidas también: si había
+  una tercera pestaña, pasa a la salida 2. La salida que queda libre se vacía.
 
 **Ejemplo.** Conecta dos *File* (renombrados «Clientes» y «Pedidos») a Data Table Pro.
 Corrige en «Clientes» los códigos postales mal escritos con *Buscar y reemplazar* y conecta

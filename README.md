@@ -114,9 +114,10 @@ a la pregunta clave: ¿la diferencia entre modelos es real o se debe al azar?
 
 Parte del **Data Table** de Orange y lo convierte en un editor de tablas:
 
-- **Varias tablas**, cada una en su pestaña. Salidas numeradas **Data 1…5** (tabla completa con
-  los cambios) y **Selected Data 1…5** (filas seleccionadas), en el orden de las pestañas, que
-  llevan el número de su salida (①, ②…). Cada salida se llama como el nodo de origen.
+- **Varias tablas**, cada una en su pestaña. Dos pares de salidas numeradas, **Data 1** y **Data 2**
+  (tabla completa con los cambios) y **Selected Data 1** y **Selected Data 2** (filas
+  seleccionadas), para las dos primeras pestañas, que llevan el número de su salida (①, ②); las
+  demás se ven y se editan sin salida. Cada salida se llama como el nodo de origen.
 - **Ordenar** pulsando una columna (ascendente, descendente y vuelta al orden original) y
   **reordenar columnas** arrastrando la cabecera: las salidas respetan los dos órdenes.
 - **Editar celdas** con validación por tipo, y **deshacer y rehacer** (Ctrl+Z, Ctrl+Y).
@@ -191,7 +192,7 @@ académico, puedes tomar los metadatos de
 (GitHub ofrece «Cite this repository» con el formato APA o BibTeX), por ejemplo:
 
 > Asencio Cortés, G. (2026). *orange_gualbe_toolbox: utilidades visuales de ciencia
-> de datos para Orange Data Mining* (versión 0.5.3) [Software]. Zenodo.
+> de datos para Orange Data Mining* (versión 0.5.4) [Software]. Zenodo.
 > https://doi.org/10.5281/zenodo.24144757
 
 **Componentes de terceros.** El add-on depende de Orange Data Mining (GPL-3.0 o

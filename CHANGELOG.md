@@ -3,6 +3,16 @@
 Cada versión se publica a la vez en GitHub (release `vX.Y.Z`) y en
 [PyPI](https://pypi.org/project/orange-gualbe-toolbox/).
 
+## 0.5.4 (2026-11-13)
+
+- **Data Table Pro** tiene ahora dos pares de salidas, **Data 1**, **Selected Data 1**, **Data 2** y
+  **Selected Data 2**, en lugar de cinco. A partir de la tercera, las pestañas se ven y se editan con
+  «—» en lugar de número y sin salida, y el widget lo avisa. Al quitar un enlace, la tercera pestaña
+  sube a la salida 2.
+- **Compatibilidad**: en los workflows guardados con enlaces desde *Data 3* a *Data 5* o *Selected
+  Data 3* a *Selected Data 5*, esos enlaces se pierden al abrirlos y Orange lo avisa. Los cambios
+  guardados de todas las pestañas se conservan.
+
 ## 0.5.3 (2026-11-13)
 
 Correcciones de **Data Table Pro**:
