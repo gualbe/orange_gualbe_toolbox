@@ -166,20 +166,40 @@ Antes de tocar widgets, ayuda o empaquetado lee
   de sus valores. Las columnas se reordenan en la cabecera y la salida respeta el orden dentro de
   cada rol.
 - Prefijo y sufijo solo en texto y categóricas: las numéricas y de fecha no se tocan, con aviso.
-  Reemplazar en una categórica cambia cada valor distinto y el nuevo ocupa el lugar del antiguo.
-  Un reemplazo que no da un valor válido en una numérica o de fecha se rechaza y se cuenta.
+  Reemplazar en una categórica cambia cada valor distinto y el nuevo ocupa el lugar del antiguo;
+  por «» o «?», desconocido. Un reemplazo que no da un valor válido en una numérica o de fecha se
+  rechaza y se cuenta.
+- Precisión: el editor recibe el texto visible si es exacto y, si redondea, el valor completo
+  (`edit_text`); confirmar sin cambios no es una edición. Buscar y reemplazar trabajan sobre el
+  TEXTO VISIBLE (0.5.2: sobre el valor completo tocaban dígitos ocultos); las celdas sin
+  coincidencia o cuyo número no cambia no se tocan, y reescribir una celda que se veía redondeada
+  se avisa con un recuento (`last_rounded`). El formato vectorizado debe dar lo mismo que `str_val`
+  y `repr_val`: redondeo de numpy, 0.0 y −0.0 distintos (agrupar por bits), fechas sin dividir los
+  nanosegundos entre 1e9.
+- Fechas: sin zona escrita se toma la de la columna; una hora en una columna de solo fechas activa
+  `have_time`.
+- Tipo y rol en varias columnas: atómicos (o todas o ninguna, con error). Un prefijo que supera el
+  máximo de valores se revierte.
 - Columnas de texto siempre meta (Orange lo exige). Número a fecha: segundos desde 1970. Las
   conversiones fallidas se cuentan por columna.
 - «Columnas seleccionadas» (ámbito, tipo y rol): las columnas enteras seleccionadas; si no hay,
   con filas completas la columna de la celda actual y, si no, las de las celdas seleccionadas.
-- Deshacer y rehacer con instantáneas de las columnas afectadas, hasta 50 pasos. Cada operación
-  de datos va además a un registro serializable que se guarda con el workflow (`stored_changes`,
-  por identificador de pestaña) y se repite si llega una tabla con la misma firma (columnas y
-  número de filas); si no, se descarta con aviso. El orden se repite después de los datos.
-- El filtro rápido solo cambia la vista: «Data N» lleva todas las filas.
+- Deshacer y rehacer con instantáneas de las columnas afectadas, hasta 50 pasos, también para lo
+  restaurado del workflow. Cada operación de datos va a un registro serializable (filas sueltas
+  comprimidas con zlib) que se guarda con el workflow (`stored_changes`, por identificador de
+  pestaña) junto con la firma (columnas y número de filas) y una huella de TODO el contenido (no de
+  una muestra; sin ids, que cambian al releer). Al abrir: primero por nombre exacto; por huella solo
+  en `handleNewSignals`, con todas las entradas ya presentes y un único candidato (si hay varios, se
+  avisa y no se aplica). Firma o huella distintas: se descarta con aviso. Cambios sin entrada: se
+  avisa y se conservan. Los avisos se acumulan por pestaña. El orden se repite tras los datos.
+- Salidas: solo se envía lo que cambia (comparación por identidad con lo último enviado); por eso
+  las salidas se guardan por versión del estado y no se invalidan al refrescar.
+- El filtro rápido solo cambia la vista: «Data N» lleva todas las filas, pero con el filtro activo
+  buscar, reemplazar y el prefijo actúan solo sobre las filas visibles, y el ámbito lo dice.
 - Tablas dispersas: se muestran y emiten densas, con aviso, hasta 50 millones de celdas.
-- En los tests, borrar los widgets (`deleteLater` + `sendPostedEvents`) antes de salir; si no, el
-  intérprete puede terminar con SIGBUS. Los temporizadores, siempre hijos del widget.
+- En los tests, borrar los widgets (`deleteLater` + `sendPostedEvents`) antes de salir, o salir con
+  `os._exit`; si no, el intérprete puede terminar con SIGBUS. Los temporizadores, siempre hijos del
+  widget.
 
 ## Widgets
 
