@@ -3,6 +3,17 @@
 Cada versión se publica a la vez en GitHub (release `vX.Y.Z`) y en
 [PyPI](https://pypi.org/project/orange-gualbe-toolbox/).
 
+## 0.5.3 (2026-11-13)
+
+Correcciones de **Data Table Pro**:
+
+- Los cambios guardados con la 0.5.1 vuelven a restaurarse: la 0.5.2 tomaba su huella, de otro
+  formato, por «datos distintos» y los borraba. Ahora la huella lleva versión y un cambio de formato
+  nunca descarta cambios.
+- Una pestaña ya cargada, o con cambios propios, nunca recibe los cambios guardados de otra: al
+  quitar el enlace de «A», «B» con la misma tabla ya no hereda sus ediciones.
+- La huella del contenido se calcula solo cuando hace falta y es más rápida con columnas de texto.
+
 ## 0.5.2 (2026-11-13)
 
 Correcciones de **Data Table Pro**:

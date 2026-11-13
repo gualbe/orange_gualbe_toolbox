@@ -29,6 +29,21 @@ from Orange.widgets.widget import Msg, MultiInput, Output, OWWidget
 from orangecontrib.orange_gualbe_toolbox.widgets import _dtp_engine as engine
 
 MAX_OUTPUTS = 5
+
+
+def _comparable(entry):
+    """Solo se comparan huellas del mismo algoritmo; las de otra versión cuentan como ausentes.
+
+    Se mira la versión guardada y también el formato (longitud): la 0.5.1 guardaba un sha1 de 16
+    caracteres sin versión. Un cambio de formato nunca debe tomarse por «datos distintos».
+    """
+    value = entry.get("fingerprint")
+    return (isinstance(value, str) and len(value) == engine.FINGERPRINT_LENGTH
+            and entry.get("fingerprint_version") == engine.FINGERPRINT_VERSION)
+
+
+def _same_fingerprint(entry, state):
+    return _comparable(entry) and entry.get("fingerprint") == state.fingerprint
 BADGES = "①②③④⑤"
 SCOPE_ALL, SCOPE_COLUMNS, SCOPE_ROWS = range(3)
 SCOPES = ("Toda la tabla", "Columnas seleccionadas", "Filas seleccionadas")
@@ -544,8 +559,16 @@ class Page(QWidget):
 
     # -------------------------------------------------------- guardado ----
 
+    def has_changes(self):
+        """¿Tiene estado propio? Datos, orden de filas, orden de columnas o colores."""
+        if self.state is None:
+            return False
+        return bool(self.state.log or self.state.sort_keys or any(self.colors.values())
+                    or self.column_order() != [c.cid for c in self.state.columns])
+
     def stored(self):
-        return dict(signature=self.state.signature, fingerprint=self.state.fingerprint, log=list(self.state.log),
+        return dict(signature=self.state.signature, fingerprint=self.state.fingerprint,
+                    fingerprint_version=engine.FINGERPRINT_VERSION, log=list(self.state.log),
                     sort=list(self.state.sort_keys), columns=self.column_order(), colors=self.colors)
 
 
@@ -790,6 +813,10 @@ class OWDataTablePro(OWWidget):
 
     @Inputs.data.remove
     def remove_data(self, index):
+        for other in self.pages:
+            if getattr(other, "pending_restore", False):
+                other.pending_restore = False  # quitar un enlace nunca traslada cambios a otra pestaña
+                self._restore_notes.pop(other.key, None)  # ni deja colgado el aviso de ambigüedad
         page = self.pages.pop(index)
         self._load_errors.pop(page.key, None)
         self._restore_notes.pop(page.key, None)
@@ -816,9 +843,9 @@ class OWDataTablePro(OWWidget):
     def _restore(self, page, identifier):
         """Repite los cambios guardados con el nombre exacto de esta pestaña.
 
-        Si no hay, la pestaña queda pendiente: al final de la ronda de entradas
-        (`_restore_by_content`) se buscan por contenido, cuando ya están todas las pestañas y
-        ninguna puede quedarse con los cambios de otra.
+        Si no hay, la pestaña queda pendiente solo durante la ronda de entradas en que se carga:
+        al final de esa ronda (`_restore_by_content`) se buscan por contenido, cuando ya están
+        las demás pestañas. Una pestaña que ya estaba cargada nunca hereda cambios ajenos.
         """
         stored = dict(self.stored_changes or {})
         saved = stored.get(identifier)
@@ -827,26 +854,32 @@ class OWDataTablePro(OWWidget):
             self._apply_saved(page, identifier, identifier, saved, stored)
 
     def _restore_by_content(self):
-        """Nodo renombrado (o «X (2)» que pasa a «X»): cambios sin dueño con la misma huella."""
+        """Nodo renombrado (o «X (2)» que pasa a «X»): cambios sin dueño con la misma huella.
+
+        Solo para las pestañas recién cargadas y sin estado propio. Si el caso es ambiguo (varios
+        candidatos), la pestaña sigue pendiente hasta la siguiente ronda de entradas, por si llega
+        la que falta; en cuanto deja de serlo, o el usuario cambia algo, deja de estar pendiente.
+        """
         stored = dict(self.stored_changes or {})
         names = {p.identifier for p in self.pages}
         for page in self.pages:
             if not getattr(page, "pending_restore", False):
                 continue
-            if page.state is None or page.state.log:
-                page.pending_restore = False  # ya tiene cambios propios: no se pisan
+            if page.state is None or page.has_changes():
+                page.pending_restore = False  # ya tiene estado propio: no se pisa
                 continue
             candidates = [key for key, entry in stored.items()
                           if key not in names and entry.get("signature") == page.state.signature
-                          and entry.get("fingerprint") == page.state.fingerprint]
-            if len(candidates) == 1:
-                page.pending_restore = False
-                self._apply_saved(page, page.identifier, candidates[0], stored[candidates[0]], stored)
-                stored = dict(self.stored_changes or {})
-            elif len(candidates) > 1:
+                          and _same_fingerprint(entry, page.state)]
+            if len(candidates) > 1:
                 self._restore_notes[page.key] = (
                     f"Hay varios cambios guardados ({', '.join(f'«{k}»' for k in candidates[:3])}) que podrían ser "
                     f"de «{page.identifier}», con la misma tabla: no se aplica ninguno para no equivocarse.")
+                continue  # sigue pendiente: quizá llega la otra entrada en la siguiente ronda
+            page.pending_restore = False
+            if candidates:
+                self._apply_saved(page, page.identifier, candidates[0], stored[candidates[0]], stored)
+                stored = dict(self.stored_changes or {})
 
     def _apply_saved(self, page, identifier, key, saved, stored):
         state = page.state
@@ -854,7 +887,7 @@ class OWDataTablePro(OWWidget):
             self._restore_notes[page.key] = (f"La tabla «{identifier}» ha cambiado (columnas o número de filas): se "
                                              "descartan los cambios que se guardaron con el workflow.")
             stored.pop(key, None)
-        elif saved.get("fingerprint") not in (None, state.fingerprint):
+        elif _comparable(saved) and not _same_fingerprint(saved, state):
             self._restore_notes[page.key] = (f"Los datos de «{identifier}» han cambiado (misma forma, otros valores): "
                                              "se descartan los cambios guardados para no aplicarlos a filas "
                                              "equivocadas.")
@@ -1250,8 +1283,7 @@ class OWDataTablePro(OWWidget):
             if page.saved_key and page.saved_key != page.identifier:
                 stored.pop(page.saved_key, None)  # el nodo se ha renombrado: se guarda con el nombre nuevo
             page.saved_key = page.identifier
-            if page.state.log or page.state.sort_keys or page.colors != {"cells": {}, "rows": {}, "cols": {}} \
-                    or page.column_order() != [c.cid for c in page.state.columns]:
+            if page.has_changes():
                 stored[page.identifier] = page.stored()
             else:
                 stored.pop(page.identifier, None)

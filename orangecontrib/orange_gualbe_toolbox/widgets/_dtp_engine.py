@@ -333,6 +333,12 @@ def _signature(table):
     return [len(table)] + [[var.name, type(var).__name__] for var in domain.variables + domain.metas]
 
 
+# Versión del algoritmo de la huella. Si cambia, las huellas guardadas con otra versión no se
+# comparan (se tratan como «sin huella»): un cambio de formato nunca debe borrar cambios guardados.
+FINGERPRINT_VERSION = 2
+FINGERPRINT_LENGTH = 24  # caracteres del resumen blake2b de 12 bytes
+
+
 def fingerprint(table):
     """Huella del contenido completo: X, Y y metas por bloques, sin copiar la tabla.
 
@@ -354,8 +360,9 @@ def fingerprint(table):
             import pandas as pd
             columns = block.T if block.ndim == 2 else block.reshape(1, -1)
             for column in columns:
+                # Sin categorizar: con textos casi todos distintos es cuatro veces más rápido.
                 hashed = pd.util.hash_array(np.array(["" if v is None else str(v) for v in column], dtype=object),
-                                            categorize=True)
+                                            categorize=False)
                 digest.update(hashed.tobytes())
         else:
             digest.update(np.ascontiguousarray(block, dtype=float).tobytes())
@@ -375,7 +382,7 @@ class TableState:
         self.source = table
         self.name = name or getattr(table, "name", "") or "Datos"
         self.signature = _signature(table)
-        self.fingerprint = fingerprint(table)
+        self._fingerprint = None   # perezosa: solo se calcula si hay que comparar o guardar
         self.notes = []
         self.columns: List[Column] = []
         self._load(table)
@@ -423,6 +430,12 @@ class TableState:
                     zone = getattr(var, "_timezone", None)
                     column.tz = zone if zone not in (None, "different timezones") else None
                 self.columns.append(column)
+
+    @property
+    def fingerprint(self):
+        if self._fingerprint is None:
+            self._fingerprint = fingerprint(self.source)
+        return self._fingerprint
 
     def column_texts(self, cid, full=False):
         """Textos de todas las filas de una columna, guardados hasta el siguiente cambio.

@@ -171,7 +171,9 @@ tabla (todas sus celdas). Al volver a abrirlo:
   pueden deshacer;
 - si se ha renombrado el nodo de origen, se reconocen por el contenido, una vez han llegado todas
   las entradas, y se aplican igual. Si hay varias pestañas con la misma tabla y no se puede saber de
-  cuál eran, no se aplican y el widget lo avisa;
+  cuál eran, no se aplican y el widget lo avisa. Esto solo ocurre cuando se carga la pestaña: una
+  pestaña que ya estaba abierta, o que ya tiene cambios propios (aunque solo sea un orden), nunca
+  recibe los cambios de otra, por ejemplo al quitar un enlace;
 - si la tabla ha cambiado, aunque tenga la misma forma, se descartan con un aviso, para no aplicar
   ediciones a filas equivocadas;
 - si hay cambios guardados que no corresponden a ninguna entrada conectada, el widget lo avisa y
@@ -196,8 +198,9 @@ con 300.000 filas y diez columnas en un portátil:
 - buscar en toda la tabla: unos 2 segundos la primera vez y menos de 1 las siguientes (los textos se
   guardan hasta el siguiente cambio);
 - filtrar: menos de un segundo;
-- calcular la huella de la tabla al abrirla: centésimas de segundo con 300.000 filas, y unas décimas
-  con una tabla de 2.000 × 20.000 o una dispersa enorme.
+- la huella solo se calcula cuando hace falta (al comparar con cambios guardados o al guardar
+  cambios): centésimas de segundo con 300.000 filas numéricas, y unas décimas con una tabla de
+  2.000 × 20.000, una dispersa enorme o 300.000 filas con textos largos.
 
 Una tabla dispersa se muestra y se emite como densa (el widget
 lo avisa) siempre que no supere 50 millones de celdas.

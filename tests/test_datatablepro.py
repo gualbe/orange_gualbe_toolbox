@@ -773,6 +773,74 @@ check(banco.w.pages[0].filter_text == "virginica" and banco.w.pages[0].model.row
       banco.w.filter_edit.text() == "", "lo escrito en el filtro no se pierde al cambiar de pestaña enseguida")
 banco.cerrar()
 
+# ------------------------------------------------- correcciones de la 0.5.3 ----
+
+# 1. Cambios guardados con otra versión de la huella: se restauran y no se borran.
+banco = Banco().titulos("A").meter(iris.copy())
+banco.pagina(0).model.setData(banco.pagina(0).model.index(0, 0), "1")
+banco.w._save_all()
+antiguo = banco.w.settingsHandler.pack_data(banco.w)
+banco.cerrar()
+entrada = antiguo["stored_changes"]["A"]
+entrada["fingerprint"] = "ac6f51f8264ba76e"  # sha1 de 16 caracteres, como en la 0.5.1
+entrada.pop("fingerprint_version", None)
+otra = Banco(antiguo).titulos("A").meter(iris.copy())
+otra.enviar()
+check(otra.salida["data_1"].X[0, 0] == 1.0 and "A" in otra.w.stored_changes and not otra.avisos(),
+      "un workflow guardado con la huella de la 0.5.1 se restaura y no se borra")
+otra.w._save_all()
+check(otra.w.stored_changes["A"].get("fingerprint_version") == engine.FINGERPRINT_VERSION,
+      "al volver a guardar, la huella pasa al formato actual")
+otra.cerrar()
+
+# 2. Quitar el enlace de una pestaña nunca traslada sus cambios a otra.
+banco = Banco().titulos("A", "B").meter(iris.copy(), iris.copy())
+banco.pagina(0).model.setData(banco.pagina(0).model.index(0, 0), "1")
+banco.w._save_all()
+dos = banco.w.settingsHandler.pack_data(banco.w)
+banco.titulos("B")
+banco.w.remove_data(0)
+banco.w.handleNewSignals()
+banco.enviar()
+check(banco.salida["data_1"].X[0, 0] == iris.X[0, 0] and "se han aplicado" not in banco.avisos(),
+      "en la sesión: al quitar A, B no hereda su edición")
+banco.cerrar()
+otra = Banco(dos).titulos("A", "B").meter(iris.copy(), iris.copy())
+otra.pagina(1).sort("petal width", True)
+orden_b = otra.w.pages[1].state.order.copy()
+otra.titulos("B")
+otra.w.remove_data(0)
+otra.w.handleNewSignals()
+otra.enviar()
+check(otra.salida["data_1"].X[0, 0] == iris.X[orden_b[0], 0] and np.array_equal(otra.w.pages[0].state.order, orden_b)
+      and not otra.w.pages[0].state.log, "al reabrir: quitar A no pasa su edición a B, que conserva su propio orden")
+otra.cerrar()
+otra = Banco(dos).titulos("A", "B").meter(iris.copy(), iris.copy())
+otra.titulos("B")
+otra.w.remove_data(0)
+otra.w.handleNewSignals()
+otra.enviar()
+check(otra.salida["data_1"].X[0, 0] == iris.X[0, 0], "al reabrir sin tocar B: quitar A tampoco le pasa la edición")
+otra.cerrar()
+
+# 3. La huella se calcula solo cuando hace falta, y es barata también con texto.
+largos = Table.from_numpy(Domain([ContinuousVariable("a")], metas=[StringVariable(f"s{j}") for j in range(3)]),
+                          np.zeros((300_000, 1)),
+                          metas=np.array([[("x" * 500) + str(i * 3 + j) for j in range(3)] for i in range(300_000)],
+                                         dtype=object))
+inicio = time.time()
+estado = engine.TableState(largos)
+abrir_texto = time.time() - inicio
+check(estado._fingerprint is None, "abrir una tabla no calcula la huella")
+inicio = time.time()
+_ = estado.fingerprint
+huella_texto = time.time() - inicio
+otra_largos = largos.copy()
+with otra_largos.unlocked():
+    otra_largos.metas[123_456, 1] = "cambiado"
+check(huella_texto < 1 and engine.fingerprint(otra_largos) != estado.fingerprint,
+      f"huella de 300.000 × 3 textos de 500 caracteres en {huella_texto:.2f} s (abrir: {abrir_texto:.2f} s), y detecta un cambio")
+
 # --------------------------------------------------- tablas grandes ----
 
 n = 300_000

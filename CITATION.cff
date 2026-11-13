@@ -11,7 +11,7 @@ abstract: >-
 authors:
   - family-names: "Asencio Cortés"
     given-names: "Gualberto"
-version: "0.5.2"
+version: "0.5.3"
 date-released: "2026-11-13"
 license: GPL-3.0-or-later
 doi: "10.5281/zenodo.24144757"
