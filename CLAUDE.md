@@ -160,12 +160,13 @@ Antes de tocar widgets, ayuda o empaquetado lee
 - Pedido por el usuario: partir del Data Table nativo, con varias tablas en pestañas, ordenar y
   reordenar, editar, buscar y reemplazar (regex), prefijo y sufijo, renombrar, tipo y rol; visual,
   versátil, robusto y eficiente con cientos de miles de filas.
-- Salidas fijas en dos pares numerados («Data 1», «Selected Data 1», «Data 2» y «Selected Data 2»;
-  decisión del usuario, que en la 0.5.4 las redujo de cinco a dos: Orange no admite nombres
-  dinámicos), en el orden de las pestañas, que llevan el distintivo ① o ②. Todo depende de la
-  constante `MAX_OUTPUTS`, de la que se generan las salidas. Más de dos entradas: aviso, y desde la
-  tercera las pestañas se ven y se editan con «—», sin salida. Al quitar un enlace, todo sube un
-  puesto.
+- Dos salidas, «Data» y «Selected Data», que son siempre las de la PESTAÑA ACTIVA (decisión del
+  usuario en la 0.6.0; antes hubo cinco pares numerados y luego dos). Al cambiar de pestaña se
+  envían las de la nueva; cada pestaña conserva su selección; la pestaña activa se guarda con el
+  workflow (`active_tab`, que se recupera cuando han llegado las entradas). Las pestañas no llevan
+  número. `replaces` conserva los enlaces antiguos desde «Data 1» y «Selected Data 1»; los de las
+  demás salidas numeradas se pierden al abrir el workflow. Al quitar el enlace de la pestaña activa,
+  salen las de la que queda abierta.
   Cada salida se llama como el nodo de origen (de `_OWBaseWidget__process_signal_input`) o la tabla.
 - Motor sin Qt en `_dtp_engine.py`: cada tabla se pasa una vez a columnas de numpy y todo opera
   por columnas o por valor distinto. Modelo Qt perezoso propio (el `TableModel` de Orange es de
@@ -216,7 +217,7 @@ Antes de tocar widgets, ayuda o empaquetado lee
 |---|---|---|
 | SMOTE | `owsmote.py` / `OWSmote` | Balancea las clases con instancias sintéticas (SMOTE, SMOTENC o SMOTEN); gráfico antes/después. |
 | File Import Pro | `owfileimport.py` / `OWFileImport` (motor en `_fileimport.py`) | Importa desde archivo o URL (CSV, TSV, TAB, XLS/XLSX y ARFF) con vista previa, edición de columnas e importación avanzada. |
-| Data Table Pro | `owdatatablepro.py` / `OWDataTablePro` (motor en `_dtp_engine.py`) | Muestra varias tablas en pestañas y las edita: ordenar, reordenar, editar, buscar y reemplazar, tipos y roles, con dos pares de salidas numeradas. |
+| Data Table Pro | `owdatatablepro.py` / `OWDataTablePro` (motor en `_dtp_engine.py`) | Muestra varias tablas en pestañas y las edita: ordenar, reordenar, editar, buscar y reemplazar, tipos y roles; sus salidas Data y Selected Data son las de la pestaña activa. |
 | Test & Score Pro | `owtestscorepro.py` / `OWTestScorePro` (`_tsp_*.py`) | Evalúa modelos como Test & Score, también con ventana deslizante para series temporales, y los compara con tests rigurosos, gráficos, tablas de resultados e informe HTML o PDF. |
 
 ## Pruebas
