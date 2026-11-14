@@ -3,6 +3,15 @@
 Cada versión se publica a la vez en GitHub (release `vX.Y.Z`) y en
 [PyPI](https://pypi.org/project/orange-gualbe-toolbox/).
 
+## 0.6.0 (2026-11-14)
+
+- **Data Table Pro** tiene ahora dos salidas, **Data** y **Selected Data**, que son siempre las de la
+  pestaña activa: al cambiar de pestaña, pasan a ser las de la nueva, y cada pestaña conserva su
+  selección. La pestaña activa se guarda con el workflow. Las pestañas ya no llevan número.
+- **Compatibilidad**: en los workflows guardados con las salidas numeradas, los enlaces que salían
+  de *Data 1* y *Selected Data 1* pasan a *Data* y *Selected Data*. Los de *Data 2* y *Selected
+  Data 2* (o de la 3 a la 5, en versiones anteriores) se pierden al abrirlos, y Orange lo avisa.
+
 ## 0.5.5 (2026-11-14)
 
 - El widget **File Import** pasa a llamarse **File Import Pro**. Solo cambia el nombre visible: los

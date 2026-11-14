@@ -5,7 +5,7 @@
 """Widget Data Table Pro: varias tablas en pestañas, editables, con buscar y reemplazar.
 
 La lógica de datos vive en _dtp_engine.py (sin Qt). Aquí están la vista perezosa, que lee
-cada celda del motor solo cuando hay que pintarla, las pestañas, las salidas numeradas y
+cada celda del motor solo cuando hay que pintarla, las pestañas, las salidas (las de la pestaña activa) y
 el estado guardado con el workflow.
 """
 from typing import Optional
@@ -28,10 +28,6 @@ from Orange.widgets.widget import Msg, MultiInput, Output, OWWidget
 
 from orangecontrib.orange_gualbe_toolbox.widgets import _dtp_engine as engine
 
-# Número de pares de salidas (Data N y Selected Data N). Todo lo demás depende de esta constante.
-MAX_OUTPUTS = 2
-FIRST_ONES = {1: "la primera tabla tiene", 2: "las dos primeras tablas tienen", 3: "las tres primeras tablas tienen",
-              4: "las cuatro primeras tablas tienen", 5: "las cinco primeras tablas tienen"}
 
 
 def _comparable(entry):
@@ -47,20 +43,8 @@ def _comparable(entry):
 
 def _same_fingerprint(entry, state):
     return _comparable(entry) and entry.get("fingerprint") == state.fingerprint
-BADGES = "①②③④⑤⑥⑦⑧⑨"[:MAX_OUTPUTS]
-OUTPUT_RANGE = (f"Data 1 y Selected Data 1" if MAX_OUTPUTS == 1
-                else f"Data 1-{MAX_OUTPUTS} y Selected Data 1-{MAX_OUTPUTS}")
-LIMIT_TEXT = FIRST_ONES.get(MAX_OUTPUTS, f"las {MAX_OUTPUTS} primeras tablas tienen")
 
 
-class _Outputs:
-    """Pares de salidas numeradas, declarados a partir de MAX_OUTPUTS (Orange no admite nombres dinámicos)."""
-
-
-for _number in range(1, MAX_OUTPUTS + 1):
-    setattr(_Outputs, f"selected_data_{_number}", Output(f"Selected Data {_number}", Table, default=_number == 1))
-    setattr(_Outputs, f"data_{_number}", Output(f"Data {_number}", Table))
-del _number
 SCOPE_ALL, SCOPE_COLUMNS, SCOPE_ROWS = range(3)
 SCOPES = ("Toda la tabla", "Columnas seleccionadas", "Filas seleccionadas")
 BarRole = Qt.UserRole + 1
@@ -593,7 +577,7 @@ class Page(QWidget):
 class OWDataTablePro(OWWidget):
     name = "Data Table Pro"
     description = ("Muestra y edita varias tablas en pestañas: ordenar, reordenar columnas, editar celdas, "
-                   "buscar y reemplazar, prefijos, tipos y roles, con salidas numeradas.")
+                   "buscar y reemplazar, prefijos, tipos y roles. Salen las tablas de la pestaña activa.")
     icon = "icons/owdatatablepro.svg"
     priority = 40
     keywords = ["data table", "tabla", "editar", "edit", "buscar", "reemplazar", "find", "replace",
@@ -602,15 +586,17 @@ class OWDataTablePro(OWWidget):
     class Inputs:
         data = MultiInput("Data", Table)
 
-    Outputs = _Outputs
+    class Outputs:
+        # Siempre la pestaña activa. `replaces` conserva los enlaces de los workflows guardados con
+        # las salidas numeradas de las versiones 0.5.x (las de la primera pestaña).
+        selected_data = Output("Selected Data", Table, default=True, replaces=["Selected Data 1"])
+        data = Output("Data", Table, replaces=["Data 1"])
 
     class Error(OWWidget.Error):
         operation = Msg("{}")
         load = Msg("{}")
 
     class Warning(OWWidget.Warning):
-        too_many = Msg("Hay {} tablas de entrada: solo " + LIMIT_TEXT + " salida (" + OUTPUT_RANGE + "). Las "
-                       "demás se ven y se editan, sin salida.")
         edit = Msg("{}")
         restore = Msg("{}")
         orphans = Msg("{}")
@@ -630,6 +616,7 @@ class OWDataTablePro(OWWidget):
     color_categories = Setting(False)
     highlight_edits = Setting(True)
     auto_commit = Setting(True)
+    active_tab = Setting(0, schema_only=True)  # pestaña cuyas tablas salen por Data y Selected Data
 
     def __init__(self):
         super().__init__()
@@ -638,6 +625,7 @@ class OWDataTablePro(OWWidget):
         self._load_errors = {}      # clave de la pestaña → mensaje (se acumulan, no se pisan)
         self._restore_notes = {}
         self._sent = {}             # salida → último objeto enviado
+        self._restoring_tab = self.active_tab or None  # pestaña activa guardada con el workflow
         self._filter_page = None
         self._filter_pending = None
         self._save_timer = QTimer(self, singleShot=True, interval=0)
@@ -949,6 +937,7 @@ class OWDataTablePro(OWWidget):
         return unique
 
     def handleNewSignals(self):
+        self._recall_active_tab()
         self._restore_by_content()
         self._show_messages()
         self.commit.now()
@@ -964,12 +953,9 @@ class OWDataTablePro(OWWidget):
                 page.state.name = page.identifier
             name = page.identifier or "Sin datos"
             modified = " ✎" if page.state is not None and page.state.is_modified() else ""
-            badge = BADGES[index] if index < MAX_OUTPUTS else "—"
-            self.tabs.setTabText(self.tabs.indexOf(page), f"{badge} {name}{modified}")
+            self.tabs.setTabText(self.tabs.indexOf(page), f"{name}{modified}")
             self.tabs.setTabToolTip(self.tabs.indexOf(page),
-                                    f"Salidas: Data {index + 1} y Selected Data {index + 1}" if index < MAX_OUTPUTS
-                                    else f"Sin salida: solo {LIMIT_TEXT} salida.")
-        self.Warning.too_many(len(self.pages), shown=len(self.pages) > MAX_OUTPUTS)
+                                    "Mientras esta pestaña está activa, sus tablas salen por Data y Selected Data.")
         self.tabs.setVisible(bool(self.pages))
         self.placeholder.setVisible(not self.pages)
 
@@ -988,6 +974,20 @@ class OWDataTablePro(OWWidget):
         self.filter_edit.blockSignals(False)
         self._scope_labels()
         self._sync_controls()
+        if self._restoring_tab is None:
+            self.active_tab = max(self.tabs.currentIndex(), 0)
+        # Data y Selected Data son siempre las de la pestaña activa.
+        self.commit.deferred()
+
+    def _recall_active_tab(self):
+        """Vuelve a la pestaña que estaba activa al guardar el workflow, cuando ya ha llegado."""
+        wanted = self._restoring_tab
+        if wanted is None:
+            return
+        if wanted < len(self.pages):
+            self.tabs.setCurrentIndex(wanted)
+            self._restoring_tab = None
+            self.active_tab = wanted
 
     # --------------------------------------------------------- controles ----
 
@@ -1007,9 +1007,7 @@ class OWDataTablePro(OWWidget):
             for widget in (self.name_edit, self.rename_button, self.kind_combo, self.role_combo):
                 widget.setEnabled(False)
             return
-        index = self.pages.index(page)
-        outputs = (f"Salidas: Data {index + 1} y Selected Data {index + 1}." if index < MAX_OUTPUTS
-                   else f"Sin salida (solo {LIMIT_TEXT} salida).")
+        outputs = "Es la pestaña activa: sale por Data y Selected Data."
         shown = len(page.model.rows)
         filtered = f" ({shown} visibles con el filtro)" if shown != state.n_rows else ""
         notes = " ".join(state.notes)
@@ -1056,7 +1054,7 @@ class OWDataTablePro(OWWidget):
 
     def _selection_changed(self, page):
         self._sync_controls()
-        if self.pages.index(page) < MAX_OUTPUTS:
+        if page is self.current_page():
             self.commit.deferred()
 
     def _filter_typed(self, _):
@@ -1279,7 +1277,7 @@ class OWDataTablePro(OWWidget):
         self._relabel()
         self._sync_controls()
         self._save_timer.start()
-        if self.pages.index(page) < MAX_OUTPUTS:
+        if page is self.current_page():
             self.commit.deferred()
 
     def _save_all(self):
@@ -1375,23 +1373,20 @@ class OWDataTablePro(OWWidget):
 
     @gui.deferred
     def commit(self):
-        slots = [(getattr(self.Outputs, f"data_{n}"), getattr(self.Outputs, f"selected_data_{n}"))
-                 for n in range(1, MAX_OUTPUTS + 1)]
         if not self.pages and not self._sent:
-            return  # sin entradas todavía: no hay nada que enviar (todas las salidas ya son None)
+            return  # sin entradas todavía: no hay nada que enviar (las salidas ya son None)
+        page = self.current_page()
         notes = []
-        for index, (data_out, selected_out) in enumerate(slots):
-            page = self.pages[index] if index < len(self.pages) else None
-            if page is None or page.state is None:
-                data, selected = None, None
-            else:
-                data, selected = page.output(), page.selected_output(self.select_full_rows)
-                notes.extend(f"{page.identifier}: {note}" for note in page.state.notes)
-            # Solo lo que ha cambiado: el lienzo no descarta los envíos repetidos y recalcularía todo.
-            for output, value in ((data_out, data), (selected_out, selected)):
-                if self._sent.get(output.name, False) is not value:
-                    self._sent[output.name] = value
-                    output.send(value)
+        if page is None or page.state is None:
+            data, selected = None, None
+        else:
+            data, selected = page.output(), page.selected_output(self.select_full_rows)
+            notes = [f"{page.identifier}: {note}" for note in page.state.notes]
+        # Solo lo que ha cambiado: el lienzo no descarta los envíos repetidos y recalcularía todo.
+        for output, value in ((self.Outputs.data, data), (self.Outputs.selected_data, selected)):
+            if self._sent.get(output.name, False) is not value:
+                self._sent[output.name] = value
+                output.send(value)
         self.Information.notes("\n".join(notes), shown=bool(notes))
 
     def send_report(self):
@@ -1399,7 +1394,7 @@ class OWDataTablePro(OWWidget):
         for index, page in enumerate(self.pages):
             if page.state is None:
                 continue
-            output = f"Data {index + 1}" if index < MAX_OUTPUTS else "sin salida"
+            output = "pestaña activa, en las salidas" if page is self.current_page() else "sin salida"
             items.append((page.identifier, f"{page.state.n_rows} filas, {len(page.state.columns)} columnas, "
                                            f"{len(page.state.log)} cambios ({output})"))
         self.report_items("Tablas", items)

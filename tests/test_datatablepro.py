@@ -24,8 +24,8 @@ from AnyQt.QtWidgets import QApplication
 from Orange.data import ContinuousVariable, DiscreteVariable, Domain, StringVariable, Table, TimeVariable
 
 from orangecontrib.orange_gualbe_toolbox.widgets import _dtp_engine as engine
-from orangecontrib.orange_gualbe_toolbox.widgets.owdatatablepro import (MAX_OUTPUTS, OWDataTablePro, SCOPE_ALL,
-                                                                         SCOPE_COLUMNS, SCOPE_ROWS)
+from orangecontrib.orange_gualbe_toolbox.widgets.owdatatablepro import (OWDataTablePro, SCOPE_ALL, SCOPE_COLUMNS,
+                                                                         SCOPE_ROWS)
 
 warnings.simplefilter("ignore")
 app = QApplication.instance() or QApplication([])
@@ -65,9 +65,8 @@ class Banco:
                 setattr(self.w, nombre, valor)
             self.w._selection_mode()
         self.salida, self.envios = {}, {}
-        for i in range(1, MAX_OUTPUTS + 1):
-            for nombre in (f"data_{i}", f"selected_data_{i}"):
-                getattr(self.w.Outputs, nombre).send = self._capturar(nombre)
+        for nombre in ("data", "selected_data"):
+            getattr(self.w.Outputs, nombre).send = self._capturar(nombre)
 
     def _capturar(self, nombre):
         def recibir(valor):
@@ -91,7 +90,14 @@ class Banco:
 
     def pagina(self, i=0):
         self.w.tabs.setCurrentIndex(i)
+        app.processEvents()
         return self.w.pages[i]
+
+    def de(self, i):
+        """Data de la pestaña i: la que sale es siempre la de la pestaña activa."""
+        self.pagina(i)
+        self.enviar()
+        return self.salida["data"]
 
     def enviar(self):
         self.w.commit.now()
@@ -134,62 +140,107 @@ iris, titanic, zoo, housing = Table("iris"), Table("titanic"), Table("zoo"), Tab
 
 # ------------------------------------------------------- entradas y salidas ----
 
-check([o.name for o in OWDataTablePro.get_signals("outputs")] ==
-      ["Selected Data 1", "Data 1", "Selected Data 2", "Data 2"] and MAX_OUTPUTS == 2,
-      "el widget declara exactamente dos pares de salidas")
+salidas = OWDataTablePro.get_signals("outputs")
+check([o.name for o in salidas] == ["Selected Data", "Data"],
+      "el widget declara dos salidas: Selected Data y Data")
+check(OWDataTablePro.Outputs.data.replaces == ["Data 1"] and OWDataTablePro.Outputs.selected_data.replaces == ["Selected Data 1"],
+      "los enlaces de los workflows con Data 1 y Selected Data 1 se conservan")
 banco = Banco().titulos("Flores", "Barco", "Animales").meter(iris, titanic, zoo)
-check([banco.w.tabs.tabText(i) for i in range(3)] == ["① Flores", "② Barco", "— Animales"],
-      "una pestaña por entrada, con su número de salida; la tercera, sin número")
-check([banco.salida[f"data_{i}"].name for i in (1, 2)] == ["Flores", "Barco"],
-      "Data N en el orden de las pestañas, con el título del nodo como nombre")
-check("3 tablas" in banco.avisos() and "dos primeras tablas tienen salida" in banco.avisos(),
-      "más de dos entradas: aviso con el texto ajustado")
-check("Sin salida" in banco.w.tabs.tabToolTip(2), "la tercera pestaña dice que no tiene salida")
-check(all(banco.salida[f"selected_data_{i}"] is None for i in range(1, MAX_OUTPUTS + 1)), "sin selección, Selected Data N es None")
+check([banco.w.tabs.tabText(i) for i in range(3)] == ["Flores", "Barco", "Animales"] and not banco.avisos(),
+      "una pestaña por entrada con el título del nodo, sin números ni aviso por haber tres")
+check(banco.salida["data"].name == "Flores" and banco.salida["selected_data"] is None,
+      "salen las tablas de la pestaña activa; sin selección, Selected Data es None")
+check(banco.de(1).name == "Barco" and banco.de(2).name == "Animales" and banco.de(0).name == "Flores",
+      "al cambiar de pestaña, Data pasa a ser la de la pestaña activa")
+check("Data y Selected Data" in banco.w.tabs.tabToolTip(2), "la pestaña explica qué sale por las salidas")
+pagina = banco.pagina(0)
+pagina.view.selectRow(4)
+app.processEvents()
+banco.enviar()
+check(banco.salida["selected_data"] is not None and len(banco.salida["selected_data"]) == 1, "Selected Data, de la pestaña activa")
+banco.pagina(1)
+banco.enviar()
+check(banco.salida["data"].name == "Barco" and banco.salida["selected_data"] is None,
+      "otra pestaña sin selección: Selected Data es None")
+banco.pagina(0)
+banco.enviar()
+check(banco.salida["selected_data"] is not None and len(banco.salida["selected_data"]) == 1,
+      "al volver, cada pestaña conserva su selección")
+banco.envios.clear()
+segunda = banco.pagina(1)
+segunda.model.setData(segunda.model.index(0, 0), "second")
+banco.pagina(0)
+banco.envios.clear()
+banco.pagina(0)
+banco.enviar()
+check(not banco.envios, "volver a activar la misma pestaña no reenvía nada")
 tercera = banco.pagina(2)
 tercera.model.setData(tercera.model.index(0, 0), "x")
-check(tercera.state.log, "la tercera pestaña se puede editar")
+check(tercera.state.log and "x" in banco.de(2).domain[zoo.domain.attributes[0].name].values,
+      "la tercera pestaña se edita y sale como las demás")
 sin_titulo = Banco().meter(iris)
-check(sin_titulo.salida["data_1"].name == "iris" and sin_titulo.w.tabs.tabText(0) == "① iris",
+check(sin_titulo.salida["data"].name == "iris" and sin_titulo.w.tabs.tabText(0) == "iris",
       "sin título de nodo, se usa el nombre de la tabla")
 sin_titulo.cerrar()
-salida = banco.salida["data_2"]
+salida = banco.de(1)
+check(np.array_equal(salida.ids, titanic.ids), "Data es la tabla de la pestaña, con sus ids")
+sin_cambios = Banco().meter(titanic)
+salida = sin_cambios.salida["data"]
 check(salida.domain == titanic.domain and np.array_equal(salida.X, titanic.X) and np.array_equal(salida.Y, titanic.Y)
-      and np.array_equal(salida.ids, titanic.ids), "sin cambios, Data N es igual a la entrada (dominio, valores e ids)")
-check("Data 2 y Selected Data 2" in banco.w.tabs.tabToolTip(1), "la pestaña dice qué salidas le corresponden")
+      and np.array_equal(salida.ids, titanic.ids), "sin cambios, Data es igual a la entrada (dominio, valores e ids)")
+sin_cambios.cerrar()
+banco.pagina(2)
 banco.w._save_all()
 tres_ajustes = banco.w.settingsHandler.pack_data(banco.w)
 banco.titulos("Barco", "Animales")  # Orange actualiza los enlaces antes de avisar al widget
+banco.pagina(0)
 banco.w.remove_data(0)
 banco.w.handleNewSignals()
-primera_columna = zoo.domain.attributes[0]
-check(banco.salida["data_1"].name == "Barco" and banco.salida["data_2"].name == "Animales" and
-      "x" in banco.salida["data_2"].domain[primera_columna.name].values,
-      "al quitar un enlace, la tercera pestaña sube a la salida 2 con sus cambios")
-check([banco.w.tabs.tabText(i) for i in range(2)] == ["① Barco", "② Animales ✎"] and not banco.avisos(),
-      "los distintivos se renumeran y desaparece el aviso")
-banco.titulos("Animales")
-banco.w.remove_data(0)
-banco.w.handleNewSignals()
-check(banco.salida["data_1"].name == "Animales" and banco.salida["data_2"] is None, "y la salida que queda libre se vacía")
+banco.enviar()
+check(banco.salida["data"].name in ("Barco", "Animales") and banco.salida["data"].name == banco.w.current_page().identifier,
+      "al quitar el enlace de la pestaña activa, salen las tablas de la que queda activa")
 banco.cerrar()
 restaurado = Banco(tres_ajustes).titulos("Flores", "Barco", "Animales").meter(iris, titanic, zoo)
-check(not restaurado.errores() and restaurado.w.pages[2].state.log and "3 tablas" in restaurado.avisos(),
-      "los ajustes guardados con más de dos pestañas se restauran sin errores")
+check(not restaurado.errores() and restaurado.w.tabs.currentIndex() == 2 and restaurado.salida["data"].name == "Animales"
+      and restaurado.w.pages[2].state.log, "al reabrir el workflow vuelve la pestaña activa, y salen sus tablas")
 restaurado.cerrar()
 
+# Un workflow de la 0.5.x con un enlace desde «Data 1» se abre enlazado desde «Data».
+import io as _io
+from importlib.metadata import EntryPoint as _EntryPoint
+from orangecanvas.registry import WidgetRegistry as _WidgetRegistry
+from orangecanvas.scheme import SchemeLink as _SchemeLink, SchemeNode as _SchemeNode
+from orangecanvas.scheme.readwrite import scheme_load as _scheme_load, scheme_to_ows_stream as _scheme_to_ows_stream
+from orangewidget.workflow.discovery import WidgetDiscovery as _WidgetDiscovery
+from orangewidget.workflow.widgetsscheme import WidgetsScheme as _WidgetsScheme
+_paquete = "orangecontrib.orange_gualbe_toolbox.widgets"
+_registro = _WidgetRegistry()
+_WidgetDiscovery(_registro).run([_EntryPoint(name="Toolbox Gualbe", value=_paquete, group="orange.widgets")])
+_esquema = _WidgetsScheme()
+_tabla = _SchemeNode(_registro.widget(_paquete + ".owdatatablepro.OWDataTablePro"), title="Data Table Pro")
+_smote = _SchemeNode(_registro.widget(_paquete + ".owsmote.OWSmote"), title="SMOTE")
+_esquema.add_node(_tabla)
+_esquema.add_node(_smote)
+_esquema.add_link(_SchemeLink(_tabla, "Data", _smote, "Data"))
+_flujo = _io.BytesIO()
+_scheme_to_ows_stream(_esquema, _flujo, pretty=True, pickle_fallback=True)
+_esquema.clear()
+_antiguo = _flujo.getvalue().decode("utf-8").replace('source_channel="Data"', 'source_channel="Data 1"')
+check('source_channel="Data 1"' in _antiguo, "workflow de prueba con un enlace desde «Data 1»")
+_abierto = _WidgetsScheme()
+_errores_carga = []
+_scheme_load(_abierto, _io.BytesIO(_antiguo.encode("utf-8")), _registro, error_handler=_errores_carga.append)
+check(not _errores_carga and len(_abierto.links) == 1 and _abierto.links[0].source_channel.name == "Data",
+      f"un enlace guardado desde «Data 1» se abre enlazado desde «Data» ({_errores_carga})")
+_abierto.clear()
+
 muchas = Banco().meter(*[iris] * 4)
-check([muchas.salida[f"data_{i}"].name for i in range(1, MAX_OUTPUTS + 1)] == ["iris", "iris (2)"] and
-      [muchas.w.tabs.tabText(i) for i in range(4)] == ["① iris", "② iris (2)", "— iris (3)", "— iris (4)"],
-      "identificadores únicos con la misma tabla repetida")
-muchas.w.remove_data(3)
-muchas.w.remove_data(2)
-muchas.w.handleNewSignals()
-check(not muchas.avisos(), "con dos entradas desaparece el aviso")
+check([muchas.w.tabs.tabText(i) for i in range(4)] == ["iris", "iris (2)", "iris (3)", "iris (4)"] and
+      muchas.de(3).name == "iris (4)", "identificadores únicos con la misma tabla repetida")
 muchas.cerrar()
 
 vacia = Banco().meter(iris[:0], None)
-check(vacia.salida["data_1"] is not None and len(vacia.salida["data_1"]) == 0 and vacia.salida["data_2"] is None
+check(vacia.salida["data"] is not None and len(vacia.salida["data"]) == 0 and vacia.de(1) is None
       and vacia.w.tabs.count() == 2 and not vacia.errores(), "tabla vacía y entrada sin datos: sin errores")
 vacia.cerrar()
 
@@ -204,28 +255,28 @@ cabecera.moveSection(cabecera.visualIndex(indice["alta"]), 0)
 cabecera.moveSection(cabecera.visualIndex(indice["peso"]), 1)
 cabecera.moveSection(cabecera.visualIndex(indice["clase"]), 2)
 banco.enviar()
-dominio = banco.salida["data_1"].domain
+dominio = banco.salida["data"].domain
 check([v.name for v in dominio.attributes] == ["alta", "edad", "color"] and dominio.class_var.name == "clase" and
       [v.name for v in dominio.metas] == ["peso", "nombre"],
       "reordenar columnas arrastrando: nuevo orden en cada grupo, respetando atributos, clase y metas")
 
 pagina.view.horizontalHeader().sectionClicked.emit(indice["edad"])
 banco.enviar()
-edades = banco.salida["data_1"].get_column("edad")
+edades = banco.salida["data"].get_column("edad")
 check(np.all(np.diff(edades[:-1]) >= 0) and np.isnan(edades[-1]), "pulsar el nombre ordena ascendente; desconocidos al final")
 pagina.view.horizontalHeader().sectionClicked.emit(indice["edad"])
 banco.enviar()
-edades = banco.salida["data_1"].get_column("edad")
+edades = banco.salida["data"].get_column("edad")
 check(np.all(np.diff(edades[:-1]) <= 0) and np.isnan(edades[-1]), "pulsar otra vez ordena descendente")
-check(banco.salida["data_1"].get_column("nombre")[0] == "Persona 7", "las demás columnas acompañan a su fila")
+check(banco.salida["data"].get_column("nombre")[0] == "Persona 7", "las demás columnas acompañan a su fila")
 pagina.view.selectRow(0)
 app.processEvents()
 banco.enviar()
-check(banco.salida["selected_data_1"] is not None and banco.salida["selected_data_1"].get_column("edad")[0] == 37,
+check(banco.salida["selected_data"] is not None and banco.salida["selected_data"].get_column("edad")[0] == 37,
       "Selected Data respeta el orden de filas")
 banco.w.restore_order()
 banco.enviar()
-check(np.array_equal(pagina.state.order, np.arange(8)) and banco.salida["data_1"].get_column("edad")[0] == 30 and
+check(np.array_equal(pagina.state.order, np.arange(8)) and banco.salida["data"].get_column("edad")[0] == 30 and
       pagina.view.horizontalHeader().sortIndicatorSection() == -1, "orden original restaurado")
 estable = engine.TableState(titanic)
 estable.sort("survived")
@@ -251,7 +302,7 @@ check(not modelo.setData(modelo.index(2, indice["alta"]), "31/31/2025"), "una fe
 check(modelo.setData(modelo.index(4, indice["nombre"]), "Ana") and modelo.setData(modelo.index(0, indice["edad"]), "?")
       and np.isnan(estado.column("edad").values[0]), "editar texto y dejar un valor desconocido")
 banco.enviar()
-salida = banco.salida["data_1"]
+salida = banco.salida["data"]
 check(salida.get_column("nombre")[4] == "Ana" and "morado" in salida.domain["color"].values,
       "las ediciones llegan a Data N, también los valores nuevos de la categórica")
 check(salida.domain["edad"] is mixta().domain["edad"] or salida.domain["edad"].name == "edad",
@@ -390,12 +441,12 @@ banco.w.change_role(banco.w.role_combo.findData(engine.TARGET))
 actual("color")
 banco.w.change_role(banco.w.role_combo.findData(engine.TARGET))
 banco.enviar()
-check([v.name for v in banco.salida["data_1"].domain.class_vars] == ["color", "clase", "nombre"] or
-      {v.name for v in banco.salida["data_1"].domain.class_vars} == {"color", "clase", "nombre"},
+check([v.name for v in banco.salida["data"].domain.class_vars] == ["color", "clase", "nombre"] or
+      {v.name for v in banco.salida["data"].domain.class_vars} == {"color", "clase", "nombre"},
       "varios objetivos a la vez")
 banco.w.change_role(banco.w.role_combo.findData(engine.META))
 banco.enviar()
-check("color" in [v.name for v in banco.salida["data_1"].domain.metas], "devolver una columna a meta")
+check("color" in [v.name for v in banco.salida["data"].domain.metas], "devolver una columna a meta")
 actual("color")
 banco.w.change_role(banco.w.role_combo.findData(engine.ATTRIBUTE))
 actual("peso")
@@ -432,7 +483,7 @@ for fila in (3, 4):
         seleccion.select(pagina.model.index(fila, columna), QItemSelectionModel.Select)
 app.processEvents()
 banco.enviar()
-parcial = banco.salida["selected_data_1"]
+parcial = banco.salida["selected_data"]
 check(parcial is not None and len(parcial) == 2 and [v.name for v in parcial.domain.variables] == ["sepal length", "iris"],
       "sin filas completas, Selected Data lleva solo las columnas seleccionadas")
 banco.w.copy_selection()
@@ -449,7 +500,7 @@ banco.w.filter_edit.setText("virginica")
 banco.w._apply_filter()
 check(pagina.model.rowCount() == 50, "filtro rápido de filas")
 banco.enviar()
-check(len(banco.salida["data_1"]) == 150, "el filtro no cambia Data N")
+check(len(banco.salida["data"]) == 150, "el filtro no cambia Data N")
 check("Media" in pagina.model.headerData(0, Qt.Horizontal, Qt.ToolTipRole), "estadísticas de la columna en la cabecera")
 banco.cerrar()
 
@@ -469,11 +520,11 @@ banco.w.choose_color(0, "#aaddff")
 banco.w._save_all()
 ajustes = banco.w.settingsHandler.pack_data(banco.w)
 banco.enviar()
-antes = banco.salida["data_1"]
+antes = banco.salida["data"]
 banco.cerrar()
 nuevo = Banco(ajustes).titulos("Flores").meter(iris.copy())
 nuevo.enviar()
-despues = nuevo.salida["data_1"]
+despues = nuevo.salida["data"]
 check(despues.domain["iris"].values == ("setosa", "versicolor", "virginica") and
       np.array_equal(despues.X, antes.X) and [v.name for v in despues.domain.attributes] == [v.name for v in antes.domain.attributes],
       "los cambios se conservan con el workflow guardado (ediciones, reemplazos, orden)")
@@ -497,7 +548,7 @@ disperso = Table.from_numpy(Domain([ContinuousVariable(f"x{i}") for i in range(4
                             sp.csr_matrix(np.eye(6, 4)), np.arange(6.0))
 banco = Banco().meter(disperso)
 banco.enviar()
-check(banco.salida["data_1"] is not None and np.array_equal(banco.salida["data_1"].X, np.eye(6, 4)) and
+check(banco.salida["data"] is not None and np.array_equal(banco.salida["data"].X, np.eye(6, 4)) and
       "dispersa" in banco.info(), "tabla dispersa: se muestra y se emite densa, con aviso")
 banco.cerrar()
 pesada = Table.from_numpy(Domain([ContinuousVariable("a")]), np.arange(5.0)[:, None], W=np.arange(5.0) + 1)
@@ -581,12 +632,13 @@ pagina = banco.pagina(0)
 pagina.view.selectRow(2)
 app.processEvents()
 banco.enviar()
-check(set(banco.envios) == {"selected_data_1"}, f"seleccionar solo reenvía Selected Data de esa pestaña ({banco.envios})")
-banco.envios.clear()
+check(set(banco.envios) == {"selected_data"}, f"seleccionar solo reenvía Selected Data ({banco.envios})")
 segunda = banco.pagina(1)
+banco.enviar()
+banco.envios.clear()
 segunda.model.setData(segunda.model.index(0, 0), "second")
 banco.enviar()
-check(set(banco.envios) == {"data_2"}, f"editar solo reenvía las salidas de esa pestaña ({banco.envios})")
+check(set(banco.envios) == {"data"}, f"editar en la pestaña activa solo reenvía Data ({banco.envios})")
 banco.cerrar()
 
 # 4. Reemplazar una categoría por «» o «?» da un valor desconocido.
@@ -616,7 +668,7 @@ app.processEvents()
 banco.w.change_role(banco.w.role_combo.findData(engine.TARGET))
 banco.enviar()
 check("No se ha cambiado ningún rol" in banco.errores() and pagina.state.column("hair").role == engine.ATTRIBUTE
-      and "hair" in [v.name for v in banco.salida["data_1"].domain.attributes],
+      and "hair" in [v.name for v in banco.salida["data"].domain.attributes],
       "rol en varias columnas con una imposible: no cambia ninguna y el estado coincide con la salida")
 banco.cerrar()
 muchas_cat = Table.from_numpy(Domain([], metas=[StringVariable("a"), StringVariable("b")]), np.empty((10001, 0)),
@@ -705,7 +757,7 @@ invertido["stored_changes"] = dict(reversed(list(ajustes["stored_changes"].items
 for nombre, guardado in (("en su orden", ajustes), ("con las claves al revés", invertido)):
     otra = Banco(guardado).titulos("A2", "B").meter(iris.copy(), iris.copy())
     otra.enviar()
-    check((otra.salida["data_1"].X[0, 0], otra.salida["data_2"].X[0, 0]) == (1.0, 2.0),
+    check((otra.de(0).X[0, 0], otra.de(1).X[0, 0]) == (1.0, 2.0),
           f"nodo renombrado {nombre}: A2 recibe lo de A y B lo suyo")
     otra.cerrar()
 otra = Banco(invertido)
@@ -718,7 +770,7 @@ otra.titulos("A2", "B")
 otra.w.insert_data(1, iris.copy())
 otra.w.handleNewSignals()
 otra.enviar()
-check((otra.salida["data_1"].X[0, 0], otra.salida["data_2"].X[0, 0]) == (1.0, 2.0),
+check((otra.de(0).X[0, 0], otra.de(1).X[0, 0]) == (1.0, 2.0),
       "al llegar la otra entrada, cada una recibe lo suyo")
 otra.cerrar()
 
@@ -735,15 +787,15 @@ for nombre, accion in (("ordenar", lambda: pagina.sort("sepal width", False)),
     accion()
     app.processEvents()
     banco.enviar()
-    check(banco.envios.get("data_1", 0) <= 1 and banco.envios.get("selected_data_1", 0) <= 1 and banco.envios.get("data_1", 0) == 1,
-          f"{nombre}: Data 1 se envía una sola vez ({banco.envios})")
+    check(banco.envios.get("data", 0) <= 1 and banco.envios.get("selected_data", 0) <= 1 and banco.envios.get("data", 0) == 1,
+          f"{nombre}: Data se envía una sola vez ({banco.envios})")
 banco.envios.clear()
 banco.w.filter_edit.setText("setosa")
 banco.w._apply_filter()
 banco.w.filter_edit.setText("")
 banco.w._apply_filter()
 banco.enviar()
-check("data_1" not in banco.envios, f"cambiar o quitar el filtro no reenvía Data 1 ({banco.envios})")
+check("data" not in banco.envios, f"cambiar o quitar el filtro no reenvía Data ({banco.envios})")
 banco.cerrar()
 
 # 4. Huella de la tabla completa.
@@ -807,7 +859,7 @@ entrada["fingerprint"] = "ac6f51f8264ba76e"  # sha1 de 16 caracteres, como en la
 entrada.pop("fingerprint_version", None)
 otra = Banco(antiguo).titulos("A").meter(iris.copy())
 otra.enviar()
-check(otra.salida["data_1"].X[0, 0] == 1.0 and "A" in otra.w.stored_changes and not otra.avisos(),
+check(otra.salida["data"].X[0, 0] == 1.0 and "A" in otra.w.stored_changes and not otra.avisos(),
       "un workflow guardado con la huella de la 0.5.1 se restaura y no se borra")
 otra.w._save_all()
 check(otra.w.stored_changes["A"].get("fingerprint_version") == engine.FINGERPRINT_VERSION,
@@ -823,7 +875,7 @@ banco.titulos("B")
 banco.w.remove_data(0)
 banco.w.handleNewSignals()
 banco.enviar()
-check(banco.salida["data_1"].X[0, 0] == iris.X[0, 0] and "se han aplicado" not in banco.avisos(),
+check(banco.salida["data"].X[0, 0] == iris.X[0, 0] and "se han aplicado" not in banco.avisos(),
       "en la sesión: al quitar A, B no hereda su edición")
 banco.cerrar()
 otra = Banco(dos).titulos("A", "B").meter(iris.copy(), iris.copy())
@@ -833,7 +885,7 @@ otra.titulos("B")
 otra.w.remove_data(0)
 otra.w.handleNewSignals()
 otra.enviar()
-check(otra.salida["data_1"].X[0, 0] == iris.X[orden_b[0], 0] and np.array_equal(otra.w.pages[0].state.order, orden_b)
+check(otra.salida["data"].X[0, 0] == iris.X[orden_b[0], 0] and np.array_equal(otra.w.pages[0].state.order, orden_b)
       and not otra.w.pages[0].state.log, "al reabrir: quitar A no pasa su edición a B, que conserva su propio orden")
 otra.cerrar()
 otra = Banco(dos).titulos("A", "B").meter(iris.copy(), iris.copy())
@@ -841,7 +893,7 @@ otra.titulos("B")
 otra.w.remove_data(0)
 otra.w.handleNewSignals()
 otra.enviar()
-check(otra.salida["data_1"].X[0, 0] == iris.X[0, 0], "al reabrir sin tocar B: quitar A tampoco le pasa la edición")
+check(otra.salida["data"].X[0, 0] == iris.X[0, 0], "al reabrir sin tocar B: quitar A tampoco le pasa la edición")
 otra.cerrar()
 
 # 3. La huella se calcula solo cuando hace falta, y es barata también con texto.

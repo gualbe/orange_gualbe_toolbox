@@ -5,8 +5,8 @@ Data Table Pro
 
 Muestra varias tablas a la vez, cada una en su pestaña, y permite cambiarlas como en una
 hoja de cálculo: ordenar filas, reordenar columnas, editar celdas, buscar y reemplazar,
-añadir prefijos y sufijos, renombrar columnas y cambiar su tipo y su rol. Cada tabla, con
-todos sus cambios, sale por su propia salida numerada.
+añadir prefijos y sufijos, renombrar columnas y cambiar su tipo y su rol. La tabla de la pestaña
+activa, con todos sus cambios, sale por *Data* y su selección por *Selected Data*.
 
 .. image:: ../../assets/captura_datatablepro.png
    :alt: Data Table Pro con tres tablas en pestañas, celdas editadas, barras y coincidencias resaltadas
@@ -17,11 +17,8 @@ Entradas
 
 - **Data**: una o varias tablas. Conecta tantas como quieras: cada enlace abre una pestaña.
 
-Salidas numeradas
------------------
-
-Orange no permite salidas con un nombre que cambie según lo conectado, así que el widget
-tiene **dos pares de salidas numeradas**, en el orden de las pestañas:
+Salidas
+-------
 
 .. list-table::
    :header-rows: 1
@@ -29,29 +26,33 @@ tiene **dos pares de salidas numeradas**, en el orden de las pestañas:
 
    * - Salida
      - Qué lleva
-   * - **Data 1** y **Data 2**
-     - La tabla completa de la pestaña 1 o 2, con todos los cambios y en el orden de filas y
+   * - **Data**
+     - La tabla completa de la **pestaña activa**, con todos los cambios y en el orden de filas y
        columnas que se ve. El filtro rápido no la recorta.
-   * - **Selected Data 1** y **Selected Data 2**
-     - Las filas seleccionadas en esa pestaña, con los mismos cambios. Sin selección no envía
+   * - **Selected Data**
+     - Las filas seleccionadas en la pestaña activa, con los mismos cambios. Sin selección no envía
        nada, como el Data Table de Orange.
 
-El número de cada pestaña aparece en un distintivo: **①** o **②**. La pestaña ① va a
-*Data 1* y *Selected Data 1*, y la ② a *Data 2* y *Selected Data 2*. El panel *Tabla* lo
-repite para la pestaña abierta y el ratón sobre la pestaña también lo dice.
+Las salidas siguen siempre a la pestaña que está abierta en la ventana: al cambiar de pestaña,
+*Data* y *Selected Data* pasan a ser las de la nueva, y cada pestaña conserva su selección para
+cuando vuelvas a ella. La pestaña activa se guarda con el workflow, así que al reabrirlo salen las
+mismas tablas.
 
-Cada tabla de salida se llama como el **nodo del que viene** (por ejemplo «Flores» si el
-nodo *File* se ha renombrado así) o, si no se puede saber, como la tabla de entrada. Así es
-fácil reconocerla después en otros widgets.
+Cada tabla de salida se llama como el **nodo del que viene** (por ejemplo «Flores» si el nodo
+*File* se ha renombrado así) o, si no se puede saber, como la tabla de entrada. Así es fácil
+reconocer en otros widgets cuál de las tablas está saliendo.
 
-- Con **más de dos** entradas, la tercera y las siguientes se ven y se pueden editar, pero no
-  tienen salida: el widget lo avisa y su pestaña lleva «—» en lugar de número.
-- Al **quitar un enlace**, las pestañas siguientes suben un puesto y sus salidas también: si había
-  una tercera pestaña, pasa a la salida 2. La salida que queda libre se vacía.
+Al **quitar el enlace** de la pestaña activa, las salidas pasan a la pestaña que queda abierta.
 
-**Ejemplo.** Conecta dos *File* (renombrados «Clientes» y «Pedidos») a Data Table Pro.
-Corrige en «Clientes» los códigos postales mal escritos con *Buscar y reemplazar* y conecta
-*Data 1* a *Merge Data* y *Data 2* a su segunda entrada: el cruce usa ya los datos corregidos.
+**Ejemplo.** Conecta dos *File* (renombrados «Clientes» y «Pedidos») a Data Table Pro y conecta su
+salida *Data* a un *Data Table* o a un gráfico. Corrige en «Clientes» los códigos postales mal
+escritos con *Buscar y reemplazar*: mientras su pestaña esté abierta, lo que se ve a continuación
+es «Clientes» corregido; al abrir la pestaña «Pedidos», pasa a verse «Pedidos».
+
+Los workflows guardados con versiones anteriores, que tenían salidas numeradas (*Data 1*,
+*Selected Data 1*, *Data 2*…), conservan los enlaces que salían de *Data 1* y *Selected Data 1*,
+que pasan a *Data* y *Selected Data*. Los que salían de las demás se pierden al abrirlos, y
+Orange lo avisa.
 
 Ordenar y reordenar
 -------------------
@@ -146,11 +147,11 @@ numéricas y los valores más frecuentes en las categóricas.
 Vista
 -----
 
-- **Filtrar filas**: muestra solo las filas que contienen el texto en alguna columna. *Data N*
+- **Filtrar filas**: muestra solo las filas que contienen el texto en alguna columna. *Data*
   sigue llevando todas las filas, pero buscar, reemplazar y el prefijo y sufijo actúan solo
   sobre las filas visibles mientras el filtro esté activo.
 - **Seleccionar filas completas**: si se desmarca, se seleccionan celdas sueltas y *Selected
-  Data N* lleva solo las columnas seleccionadas.
+  Data* lleva solo las columnas seleccionadas.
 - **Barras en las columnas numéricas**: una barra bajo cada valor, proporcional a su posición
   entre el mínimo y el máximo de la columna.
 - **Colores de las categóricas**: el color de cada valor, como en los gráficos de Orange.
@@ -183,8 +184,9 @@ Los avisos de cada pestaña se mantienen aunque lleguen otras entradas. **Restab
 todos los cambios de la pestaña abierta.
 
 Cuando cambia algo, el widget solo vuelve a enviar las salidas afectadas: al seleccionar, solo
-*Selected Data N* de esa pestaña; al editar, las de esa pestaña. Así no se recalcula todo lo que
-cuelga del nodo.
+*Selected Data*; al editar, *Data* (y *Selected Data* si cambia); al cambiar de pestaña, las dos.
+Los cambios en pestañas que no están abiertas no se envían hasta que se activan. Así no se
+recalcula todo lo que cuelga del nodo.
 
 Tablas grandes
 --------------

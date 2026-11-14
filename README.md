@@ -30,7 +30,7 @@ español (F1 o icono **?**).
 | **SMOTE** | Balancea las clases generando instancias sintéticas de las minoritarias. Muestra la distribución antes y después. |
 | **File Import Pro** | Importa datos desde un archivo o una URL (CSV, TSV, TAB, XLS/XLSX y ARFF) con vista previa y edición de columnas. |
 | **Test & Score Pro** | Evalúa modelos como Test & Score y los compara con tests estadísticos rigurosos, gráficos e informe exportable. |
-| **Data Table Pro** | Muestra varias tablas en pestañas y las edita como una hoja de cálculo: ordenar, reordenar columnas, editar, buscar y reemplazar, tipos y roles, con salidas numeradas. |
+| **Data Table Pro** | Muestra varias tablas en pestañas y las edita como una hoja de cálculo: ordenar, reordenar columnas, editar, buscar y reemplazar, tipos y roles; salen las tablas de la pestaña activa. |
 
 ### SMOTE
 
@@ -114,10 +114,9 @@ a la pregunta clave: ¿la diferencia entre modelos es real o se debe al azar?
 
 Parte del **Data Table** de Orange y lo convierte en un editor de tablas:
 
-- **Varias tablas**, cada una en su pestaña. Dos pares de salidas numeradas, **Data 1** y **Data 2**
-  (tabla completa con los cambios) y **Selected Data 1** y **Selected Data 2** (filas
-  seleccionadas), para las dos primeras pestañas, que llevan el número de su salida (①, ②); las
-  demás se ven y se editan sin salida. Cada salida se llama como el nodo de origen.
+- **Varias tablas**, cada una en su pestaña. Dos salidas, **Data** (tabla completa con los
+  cambios) y **Selected Data** (filas seleccionadas), que son siempre las de la pestaña activa;
+  cada salida se llama como el nodo de origen.
 - **Ordenar** pulsando una columna (ascendente, descendente y vuelta al orden original) y
   **reordenar columnas** arrastrando la cabecera: las salidas respetan los dos órdenes.
 - **Editar celdas** con validación por tipo, y **deshacer y rehacer** (Ctrl+Z, Ctrl+Y).
@@ -192,7 +191,7 @@ académico, puedes tomar los metadatos de
 (GitHub ofrece «Cite this repository» con el formato APA o BibTeX), por ejemplo:
 
 > Asencio Cortés, G. (2026). *orange_gualbe_toolbox: utilidades visuales de ciencia
-> de datos para Orange Data Mining* (versión 0.5.5) [Software]. Zenodo.
+> de datos para Orange Data Mining* (versión 0.6.0) [Software]. Zenodo.
 > https://doi.org/10.5281/zenodo.24144757
 
 **Componentes de terceros.** El add-on depende de Orange Data Mining (GPL-3.0 o
