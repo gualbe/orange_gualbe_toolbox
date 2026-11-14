@@ -28,7 +28,7 @@ español (F1 o icono **?**).
 | Widget | Qué hace |
 |---|---|
 | **SMOTE** | Balancea las clases generando instancias sintéticas de las minoritarias. Muestra la distribución antes y después. |
-| **File Import** | Importa datos desde un archivo o una URL (CSV, TSV, TAB, XLS/XLSX y ARFF) con vista previa y edición de columnas. |
+| **File Import Pro** | Importa datos desde un archivo o una URL (CSV, TSV, TAB, XLS/XLSX y ARFF) con vista previa y edición de columnas. |
 | **Test & Score Pro** | Evalúa modelos como Test & Score y los compara con tests estadísticos rigurosos, gráficos e informe exportable. |
 | **Data Table Pro** | Muestra varias tablas en pestañas y las edita como una hoja de cálculo: ordenar, reordenar columnas, editar, buscar y reemplazar, tipos y roles, con salidas numeradas. |
 
@@ -54,10 +54,10 @@ sus filas originales intactas, más las instancias sintéticas al final.
 Balancea solo los datos de entrenamiento: las filas sintéticas en el conjunto de
 prueba darían una evaluación demasiado optimista.
 
-### File Import
+### File Import Pro
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/gualbe/orange_gualbe_toolbox/main/assets/captura_fileimport.png" alt="Widget File Import: resumen de lo cargado, tabla de columnas y vista previa de filas" width="760">
+  <img src="https://raw.githubusercontent.com/gualbe/orange_gualbe_toolbox/main/assets/captura_fileimport.png" alt="Widget File Import Pro: resumen de lo cargado, tabla de columnas y vista previa de filas" width="760">
 </p>
 
 Reúne en un solo widget lo mejor de **File** y **CSV File Import** de Orange.
@@ -192,7 +192,7 @@ académico, puedes tomar los metadatos de
 (GitHub ofrece «Cite this repository» con el formato APA o BibTeX), por ejemplo:
 
 > Asencio Cortés, G. (2026). *orange_gualbe_toolbox: utilidades visuales de ciencia
-> de datos para Orange Data Mining* (versión 0.5.4) [Software]. Zenodo.
+> de datos para Orange Data Mining* (versión 0.5.5) [Software]. Zenodo.
 > https://doi.org/10.5281/zenodo.24144757
 
 **Componentes de terceros.** El add-on depende de Orange Data Mining (GPL-3.0 o
@@ -202,7 +202,7 @@ posterior, Bioinformatics Laboratory, Universidad de Liubliana), imbalanced-lear
 Algunas partes están adaptadas del código de Orange: la gestión de modelos y
 muestreos de Test & Score Pro (de Test & Score), el bucle de evaluación de la
 ventana deslizante (de `Validation`), la lista de archivos recientes y el arrastrar
-y soltar de File Import (de File) y la lectura del nombre de un archivo descargado
+y soltar de File Import Pro (de File) y la lectura del nombre de un archivo descargado
 (de `Orange.data.io`). Conservan el copyright y la licencia de Orange y los términos
 adicionales no se les aplican; [`NOTICE`](https://github.com/gualbe/orange_gualbe_toolbox/blob/main/NOTICE)
 detalla qué ficheros y qué partes son. Los iconos de los widgets son originales.

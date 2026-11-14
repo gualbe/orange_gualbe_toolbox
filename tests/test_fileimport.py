@@ -2,7 +2,7 @@
 # Copyright (C) 2026 Gualberto Asencio Cortés
 # Part of orange_gualbe_toolbox. See the LICENSE and NOTICE files for details.
 
-"""Prueba sin interfaz gráfica del widget File Import.
+"""Prueba sin interfaz gráfica del widget File Import Pro.
 
 Se ejecuta con el Python de Orange y sale con 1 si alguna comprobación falla.
 Recorre la matriz de formatos × anomalías × opciones con el widget real, incluida
@@ -1052,6 +1052,48 @@ servidor.shutdown()
 carpeta = banco.w._temp_dir
 banco.cerrar()
 check(not os.path.exists(carpeta), "al cerrar se borra la carpeta temporal")
+# ------------------------------------------------- nombre (0.5.5) y workflows antiguos ----
+check(OWFileImport.name == "File Import Pro" and OWFileImport.__name__ == "OWFileImport"
+      and OWFileImport.__module__.endswith(".owfileimport"),
+      "se llama File Import Pro y conserva la clase y el módulo")
+check("file import" in OWFileImport.keywords, "se sigue encontrando al buscar «file import»")
+import importlib as _importlib
+from importlib.metadata import EntryPoint as _EntryPoint
+from orangecanvas.registry import WidgetRegistry as _WidgetRegistry
+from orangecanvas.scheme.readwrite import scheme_load as _scheme_load
+from orangewidget.workflow.discovery import WidgetDiscovery as _WidgetDiscovery
+from orangewidget.workflow.widgetsscheme import WidgetsScheme as _WidgetsScheme
+_paquete = "orangecontrib.orange_gualbe_toolbox.widgets"
+_registro = _WidgetRegistry()
+_WidgetDiscovery(_registro).run([_EntryPoint(name="Toolbox Gualbe", value=_paquete, group="orange.widgets")])
+# Un workflow como los guardados hasta la 0.5.4, cuando el widget se llamaba «File Import»: se
+# guarda con Orange (ajustes en pickle, como en el lienzo) y se le ponen el nombre y el título antiguos.
+from orangecanvas.scheme import SchemeNode as _SchemeNode
+from orangecanvas.scheme.readwrite import scheme_to_ows_stream as _scheme_to_ows_stream
+_descripcion = _registro.widget(_paquete + ".owfileimport.OWFileImport")
+_original = _WidgetsScheme()
+_nodo_original = _SchemeNode(_descripcion, title="File Import")
+_original.add_node(_nodo_original)
+_guardado = _original.widget_for_node(_nodo_original)
+_guardado.advanced_open, _guardado.auto_apply, _guardado.url_text = True, False, "https://example.com/datos.csv"
+_original.sync_node_properties()
+_flujo = io.BytesIO()
+_scheme_to_ows_stream(_original, _flujo, pretty=True, pickle_fallback=True)
+_original.clear()
+ANTIGUO = _flujo.getvalue().decode("utf-8").replace('name="File Import Pro"', 'name="File Import"')
+check('name="File Import"' in ANTIGUO and 'title="File Import"' in ANTIGUO and 'format="pickle"' in ANTIGUO,
+      "workflow de prueba con el nombre antiguo y los ajustes guardados")
+_esquema = _WidgetsScheme()
+_errores_carga = []
+_scheme_load(_esquema, io.BytesIO(ANTIGUO.encode("utf-8")), _registro, error_handler=_errores_carga.append)
+_nodo = _esquema.nodes[0] if _esquema.nodes else None
+_widget = _esquema.widget_for_node(_nodo) if _nodo is not None else None
+check(not _errores_carga and _nodo is not None and _nodo.description.name == "File Import Pro" and _nodo.title == "File Import",
+      f"un workflow con el nodo «File Import» se abre sin errores ({_errores_carga})")
+check(_widget is not None and _widget.advanced_open and not _widget.auto_apply and _widget.url_text == "https://example.com/datos.csv",
+      "y el widget conserva sus ajustes guardados")
+_esquema.clear()
+
 check(not excepciones, "sin excepciones sin capturar:\n" + "\n".join(excepciones))
 shutil.rmtree(DIR, ignore_errors=True)
 

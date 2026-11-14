@@ -4,7 +4,7 @@
 # Portions adapted from Orange Data Mining (Orange/widgets/data/owfile.py),
 # Copyright (C) Bioinformatics Laboratory, University of Ljubljana, GPL-3.0-or-later.
 
-"""Widget File Import: reúne lo mejor de File y CSV File Import.
+"""Widget File Import Pro: reúne lo mejor de File y CSV File Import.
 
 La lectura vive en _fileimport.py (sin Qt). Aquí solo hay interfaz, estado que se
 guarda con el workflow y el reparto de trabajo en segundo plano: primero una
@@ -460,13 +460,15 @@ class StatTile(QWidget):
 
 
 class OWFileImport(OWUrlDropBase, RecentPathsWComboMixin, ConcurrentWidgetMixin):
-    name = "File Import"
+    # Solo cambia el nombre visible: la clase y el módulo siguen igual para que los workflows
+    # guardados con el antiguo «File Import» se abran con sus ajustes.
+    name = "File Import Pro"
     description = ("Importa datos desde un archivo o una URL (CSV, TSV, TAB, Excel y "
                    "ARFF) con vista previa, edición de columnas y opciones avanzadas.")
     icon = "icons/owfileimport.svg"
     priority = 20
-    keywords = ["file", "import", "csv", "excel", "arff", "tsv", "url", "archivo",
-                "importar", "cargar"]
+    keywords = ["file import", "file import pro", "file", "import", "csv", "excel", "arff", "tsv", "url",
+                "archivo", "importar", "cargar"]
 
     class Outputs:
         data = Output("Data", Table)

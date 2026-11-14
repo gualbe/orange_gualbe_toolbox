@@ -3,6 +3,13 @@
 Cada versión se publica a la vez en GitHub (release `vX.Y.Z`) y en
 [PyPI](https://pypi.org/project/orange-gualbe-toolbox/).
 
+## 0.5.5 (2026-11-14)
+
+- El widget **File Import** pasa a llamarse **File Import Pro**. Solo cambia el nombre visible: los
+  workflows guardados con el nombre antiguo se abren igual y conservan sus ajustes (el nodo mantiene
+  el título que tenía), la ayuda F1 abre su página y el widget se sigue encontrando al buscar
+  «file import».
+
 ## 0.5.4 (2026-11-13)
 
 - **Data Table Pro** tiene ahora dos pares de salidas, **Data 1**, **Selected Data 1**, **Data 2** y

@@ -1,13 +1,14 @@
+.. _file import pro:
 .. _file import:
 
-File Import
-===========
+File Import Pro
+===============
 
 Importa una tabla de datos desde un archivo o una URL, con vista previa y edición
 de columnas. Reúne en un solo widget lo mejor de **File** y **CSV File Import**.
 
 .. image:: ../../assets/captura_fileimport.png
-   :alt: El widget File Import con el resumen, la tabla de columnas y la vista previa
+   :alt: El widget File Import Pro con el resumen, la tabla de columnas y la vista previa
    :width: 100%
 
 Para qué sirve

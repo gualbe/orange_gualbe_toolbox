@@ -4,7 +4,7 @@
 # Portions adapted from Orange Data Mining (Orange/data/io.py),
 # Copyright (C) Bioinformatics Laboratory, University of Ljubljana, GPL-3.0-or-later.
 
-"""Motor de lectura del widget File Import (sin Qt).
+"""Motor de lectura del widget File Import Pro (sin Qt).
 
 Todos los formatos terminan en el mismo sitio: un DataFrame con una columna por
 cada columna del archivo y una lista de ColumnMeta con lo inferido o declarado.
@@ -75,7 +75,7 @@ DOWNLOAD_TIMEOUT = 20
 DOWNLOAD_DEADLINE = 900
 DEFAULT_MAX_DOWNLOAD_MB = 500
 MAX_REDIRECTS = 5
-USER_AGENT = "orange-gualbe-toolbox (File Import)"
+USER_AGENT = "orange-gualbe-toolbox (File Import Pro)"
 DOWNLOAD_BLOCK = 256 * 1024
 DOWNLOAD_POLL = 0.05
 DOWNLOAD_STOP_WAIT = 0.5

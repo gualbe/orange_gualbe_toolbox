@@ -29,7 +29,7 @@ Algunas partes están adaptadas del código de Orange Data Mining (Bioinformatic
 Laboratory, Universidad de Liubliana, GPL-3.0 o posterior): la gestión de modelos y
 de muestreos de Test & Score Pro (de Test & Score), el bucle de evaluación de la
 ventana deslizante (de ``Validation``) y la lista de archivos recientes y el
-arrastrar y soltar de File Import (de File). Conservan el copyright y la licencia de
+arrastrar y soltar de File Import Pro (de File). Conservan el copyright y la licencia de
 Orange y los términos adicionales no se les aplican; ``NOTICE`` las detalla.
 
 El add-on depende de Orange Data Mining (GPL-3.0 o posterior), imbalanced-learn
