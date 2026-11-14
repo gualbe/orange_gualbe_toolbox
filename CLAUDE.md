@@ -211,6 +211,42 @@ Antes de tocar widgets, ayuda o empaquetado lee
   `os._exit`; si no, el intérprete puede terminar con SIGBUS. Los temporizadores, siempre hijos del
   widget.
 
+### Decisiones del widget Nomogram Pro (tomadas en su alta, 0.7.0, 2026-11-14)
+
+- Pedido por el usuario: partir del Nomogram nativo y mejorarlo; clasificación y regresión, con
+  todos los modelos del panel Model posibles, no solo regresión logística y Naive Bayes.
+- Motor sin Qt en `_nomo_engine.py`. Todo se expresa en columnas *raw*, una por clase (una en
+  regresión); `TargetView` deriva la puntuación de la clase objetivo, así que cambiar la clase, la
+  escala, el orden o los valores no recalcula nada. Caché de los 4 últimos análisis.
+- Entradas Model, Data (referencia; si falta, los `original_data` del modelo, avisado como
+  información) e Instance (primera fila, por nombre). Salidas Features, Instance (con la predicción
+  real como clase) y Contributions.
+- Modo exacto: modelos con `skl_model.coef_` (pesos por sondeo de la función de decisión, así vale
+  también PLS) y Naive Bayes. Cada atributo del modelo se lleva a su atributo original recorriendo
+  `compute_value` solo por `Transformation` de una variable (sin `__call__` propio ni
+  `ReplaceUnknownsRandom`); si alguno combina atributos, aproximado con el motivo. Un `Discretizer`
+  sobre el original se dibuja por tramos. La exactitud se VERIFICA con los datos (tolerancia
+  relativa 1e-7); si falla, pasa a aproximado.
+- Puntuación exacta de la clase c: raw_c − media de las demás (con dos clases, el log-odds). El link
+  a probabilidad es logístico exacto con dos clases (se ajusta a·s + b y se comprueba); si no, una
+  calibración isotónica aproximada, y con más de dos clases solo si su error medio es ≤ 0,05 (si no,
+  el pie muestra la puntuación). Sin probabilidades (hinge, LinearSVC): puntuación de decisión.
+- Modo aproximado: dependencia parcial y ajuste aditivo directo (P-spline con penalización de
+  segundas diferencias y λ elegido en un 30 % apartado: el más fuerte a menos de un 5 % del mejor),
+  en probabilidad y en log-odds. Automático = el de menor error medio, con un 5 % de ventaja para la
+  dependencia parcial. Las filas de la dependencia parcial se ajustan a un presupuesto de 8 s según
+  lo que tarda el modelo en predecir; el ajuste aditivo, como mucho 1.200 columnas.
+- La predicción mostrada es siempre la del modelo real; aviso si la suma se aleja (en aproximado,
+  más de máx(0,05, 2·error medio) en probabilidad o máx(10 % de la desviación, 2·error medio) en
+  regresión). Fidelidad alta con R² ≥ 0,95, media ≥ 0,8, baja por debajo (aviso).
+- Puntos: el atributo de mayor rango entre los mostrados ocupa 100; los ocultos se suman en «Otros
+  atributos» con su contribución actual. Efectos no monótonos (más de un 3 % del rango): curva con
+  x = puntos e y = valor, arrastre en vertical.
+- Banda: dispersión 5–95 % de los árboles de un bosque por bagging, o residuos 5–95 % en regresión.
+- Clase por defecto: la positiva en las binarias («1», «yes», «sí»…; si no, la segunda).
+- La escena se redibuja entera al cambiar la vista y solo su parte dinámica al mover un valor; el
+  arrastre lo gestiona la vista (no los items, que se recrean). El ancho reserva la barra vertical.
+
 ## Widgets
 
 | Widget | Fichero / clase | Qué hace |
@@ -218,6 +254,7 @@ Antes de tocar widgets, ayuda o empaquetado lee
 | SMOTE | `owsmote.py` / `OWSmote` | Balancea las clases con instancias sintéticas (SMOTE, SMOTENC o SMOTEN); gráfico antes/después. |
 | File Import Pro | `owfileimport.py` / `OWFileImport` (motor en `_fileimport.py`) | Importa desde archivo o URL (CSV, TSV, TAB, XLS/XLSX y ARFF) con vista previa, edición de columnas e importación avanzada. |
 | Data Table Pro | `owdatatablepro.py` / `OWDataTablePro` (motor en `_dtp_engine.py`) | Muestra varias tablas en pestañas y las edita: ordenar, reordenar, editar, buscar y reemplazar, tipos y roles; sus salidas Data y Selected Data son las de la pestaña activa. |
+| Nomogram Pro | `ownomogrampro.py` / `OWNomogramPro` (motor en `_nomo_engine.py`) | Nomograma de cualquier modelo de clasificación o regresión: exacto para los aditivos (verificado) y aproximado, con su fidelidad, para el resto; predicción siempre del modelo real. |
 | Test & Score Pro | `owtestscorepro.py` / `OWTestScorePro` (`_tsp_*.py`) | Evalúa modelos como Test & Score, también con ventana deslizante para series temporales, y los compara con tests rigurosos, gráficos, tablas de resultados e informe HTML o PDF. |
 
 ## Pruebas
