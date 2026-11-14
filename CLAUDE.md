@@ -12,7 +12,7 @@ Antes de tocar widgets, ayuda o empaquetado lee
 - Distribución y namespace: `orange_gualbe_toolbox` / `orangecontrib.orange_gualbe_toolbox` (en PyPI
   normalizado como `orange-gualbe-toolbox`).
 - Categoría: «Toolbox Gualbe», color `#7B68EE`.
-- Dependencias: `Orange3>=3.32.0`, `imbalanced-learn`, `pandas>=2.0` (File Import usa
+- Dependencias: `Orange3>=3.32.0`, `imbalanced-learn`, `pandas>=2.0` (File Import Pro usa
   `format="ISO8601"`), `openpyxl`, `xlrd`, `baycomp`, `scipy>=1.9` (Wilcoxon con `method`)
   y `matplotlib`. Sin más límites de versión. `statsmodels` solo se usa en los tests.
 - Repo público https://github.com/gualbe/orange_gualbe_toolbox (rama `main`, fuente de
@@ -45,7 +45,13 @@ Antes de tocar widgets, ayuda o empaquetado lee
 - Las tablas dispersas siguen dispersas a la salida. Solo `SMOTE` trabaja en
   disperso; `SMOTENC` y `SMOTEN` convierten a denso internamente.
 
-### Decisiones del widget File Import (tomadas en su alta, 2026-11-09)
+### Decisiones del widget File Import Pro (tomadas en su alta, 2026-11-09)
+
+- Se llamó «File Import» hasta la 0.5.4; desde la 0.5.5, «File Import Pro». Solo cambió el nombre
+  visible: la clase `OWFileImport` y el módulo `owfileimport.py` no se renombran, para que los
+  workflows guardados se abran con sus ajustes. La página de ayuda lleva las dos etiquetas
+  (`.. _file import pro:`, que es la que busca F1, y `.. _file import:`) y las palabras clave
+  incluyen «file import».
 
 - Pedido por el usuario: integrar lo mejor de File y CSV File Import, con carga desde
   URL, vista previa, configuración de columnas, importación avanzada y los formatos
@@ -154,9 +160,12 @@ Antes de tocar widgets, ayuda o empaquetado lee
 - Pedido por el usuario: partir del Data Table nativo, con varias tablas en pestañas, ordenar y
   reordenar, editar, buscar y reemplazar (regex), prefijo y sufijo, renombrar, tipo y rol; visual,
   versátil, robusto y eficiente con cientos de miles de filas.
-- Salidas fijas en pares numerados hasta 5 («Data N» y «Selected Data N», decisión del usuario:
-  Orange no admite nombres dinámicos), en el orden de las pestañas, que llevan el distintivo ①…⑤.
-  Más de 5 entradas: aviso, y las sobrantes sin salida. Al quitar un enlace, todo sube un puesto.
+- Salidas fijas en dos pares numerados («Data 1», «Selected Data 1», «Data 2» y «Selected Data 2»;
+  decisión del usuario, que en la 0.5.4 las redujo de cinco a dos: Orange no admite nombres
+  dinámicos), en el orden de las pestañas, que llevan el distintivo ① o ②. Todo depende de la
+  constante `MAX_OUTPUTS`, de la que se generan las salidas. Más de dos entradas: aviso, y desde la
+  tercera las pestañas se ven y se editan con «—», sin salida. Al quitar un enlace, todo sube un
+  puesto.
   Cada salida se llama como el nodo de origen (de `_OWBaseWidget__process_signal_input`) o la tabla.
 - Motor sin Qt en `_dtp_engine.py`: cada tabla se pasa una vez a columnas de numpy y todo opera
   por columnas o por valor distinto. Modelo Qt perezoso propio (el `TableModel` de Orange es de
@@ -206,8 +215,8 @@ Antes de tocar widgets, ayuda o empaquetado lee
 | Widget | Fichero / clase | Qué hace |
 |---|---|---|
 | SMOTE | `owsmote.py` / `OWSmote` | Balancea las clases con instancias sintéticas (SMOTE, SMOTENC o SMOTEN); gráfico antes/después. |
-| File Import | `owfileimport.py` / `OWFileImport` (motor en `_fileimport.py`) | Importa desde archivo o URL (CSV, TSV, TAB, XLS/XLSX y ARFF) con vista previa, edición de columnas e importación avanzada. |
-| Data Table Pro | `owdatatablepro.py` / `OWDataTablePro` (motor en `_dtp_engine.py`) | Muestra varias tablas en pestañas y las edita: ordenar, reordenar, editar, buscar y reemplazar, tipos y roles, con salidas numeradas. |
+| File Import Pro | `owfileimport.py` / `OWFileImport` (motor en `_fileimport.py`) | Importa desde archivo o URL (CSV, TSV, TAB, XLS/XLSX y ARFF) con vista previa, edición de columnas e importación avanzada. |
+| Data Table Pro | `owdatatablepro.py` / `OWDataTablePro` (motor en `_dtp_engine.py`) | Muestra varias tablas en pestañas y las edita: ordenar, reordenar, editar, buscar y reemplazar, tipos y roles, con dos pares de salidas numeradas. |
 | Test & Score Pro | `owtestscorepro.py` / `OWTestScorePro` (`_tsp_*.py`) | Evalúa modelos como Test & Score, también con ventana deslizante para series temporales, y los compara con tests rigurosos, gráficos, tablas de resultados e informe HTML o PDF. |
 
 ## Pruebas
