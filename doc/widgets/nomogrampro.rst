@@ -28,7 +28,9 @@ Entradas
   que se entrenó el modelo, que Orange guarda con él. También se usan esos datos si *Data* tiene
   menos de 20 filas, y, para la escala de un atributo, si su columna en *Data* no tiene valores
   conocidos o (en un numérico) es constante; el widget lo dice. Si el modelo no guarda sus datos
-  de entrenamiento, avisa de que la referencia no es fiable.
+  de entrenamiento, avisa de que la referencia no es fiable. Si *Data* no tiene ningún valor
+  conocido en los atributos del modelo, la referencia son los datos de entrenamiento (con un
+  aviso) o, si el modelo no los guarda, el widget da un error que lo explica.
 - **Instance** (opcional): fija los valores iniciales con la **primera fila** de la tabla. Las
   columnas se emparejan por nombre; las que faltan conservan su valor.
 
@@ -244,7 +246,9 @@ predicción real y muestra la dispersión entre los árboles.
 Rendimiento
 -----------
 
-El cálculo se hace en segundo plano y se puede interrumpir. El modo exacto tarda centésimas de
+El cálculo se hace en segundo plano y se puede interrumpir en cualquier momento: el modelo predice
+en trozos de medio segundo como mucho, así que cambiar de modelo o de datos, o cerrar el widget, a
+mitad de un cálculo largo responde en menos de un segundo. El modo exacto tarda centésimas de
 segundo. El aproximado usa una muestra de las filas de referencia y una rejilla por atributo. El
 número de filas de fondo de la dependencia parcial es **fijo** para unos datos dados (unas 100.000
 predicciones, algo más con muchos atributos), así que el mismo modelo con los mismos datos da el
@@ -254,6 +258,6 @@ segundos usa menos filas, y lo avisa. Con muchos atributos usa menos puntos por 
 
 Medido en un portátil: con 5.000 filas y 20 atributos, una red neuronal o un *Random Forest* de 100
 árboles tardan menos de medio segundo; con 1.000 filas y 300 atributos, ese *Random Forest* tarda
-unos 3 segundos. Con 6.000 filas de *adult*, un *Random Forest* de 500 árboles tarda unos 3,5
+unos 3 segundos. Con 6.000 filas de *adult*, un *Random Forest* de 500 árboles tarda unos 5
 segundos, kNN entre medio segundo y 2, y una SVM con núcleo RBF, la más lenta, unos 17. Cambiar la
 clase objetivo, la escala, el orden o los valores no recalcula nada.

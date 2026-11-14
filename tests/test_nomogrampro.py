@@ -614,20 +614,29 @@ a = E.analyze(m, vacia)
 rangos = {e.name: (e.lo, e.hi) for e in a.target_view(1).effects if not e.is_discrete}
 ok = {e.name: (e.lo, e.hi) for e in ref.target_view(1).effects if not e.is_discrete}
 check(rangos == ok, f"Data sin valores: rangos de entrenamiento {rangos}")
-check(any("entrenamiento" in n for n in a.notes), "Data sin valores: se dice")
+check(any("entrenamiento" in n for n in a.notes + a.warnings), "Data sin valores: se dice")
 edad = HEART[HEART.get_column("age") == 54]
 a = E.analyze(m, edad)
 e_age = [e for e in a.target_view(1).effects if e.name == "age"][0]
 check(e_age.lo < 54 < e_age.hi, f"age constante en Data: rango de entrenamiento {e_age.lo}–{e_age.hi}")
 m2 = silent(LogisticRegressionLearner(), HEART)
 m2.original_data = None
-a = E.analyze(m2, vacia)
-check(a.warnings and "valores conocidos" in " ".join(a.warnings),
-      f"Data sin valores y sin entrenamiento: aviso ({a.warnings})")
+try:
+    E.analyze(m2, vacia)
+    check(False, "Data sin valores y sin entrenamiento: debe dar error")
+except E.NomogramError as exc:
+    check("valor conocido" in str(exc), f"Data sin valores y sin entrenamiento: error claro ({exc})")
 b = Banco()
 b.enviar(m2, vacia)
-check(b.w.Warning.reference.is_shown(), "Data sin valores: el widget avisa")
+check(b.w.Error.unsupported.is_shown(), "Data sin valores y sin entrenamiento: el widget da error")
 b.cerrar()
+# una columna sin valores (las demás sí): rango de entrenamiento y aviso
+parcial2 = HEART.copy()
+with parcial2.unlocked():
+    parcial2.X[:, 0] = np.nan
+a = E.analyze(m2, parcial2)
+check(a.warnings and "valores conocidos" in " ".join(a.warnings),
+      f"una columna sin valores y sin entrenamiento: aviso ({a.warnings})")
 
 # 7.3 ajuste aditivo: las categorías sin datos no tienen efecto inventado
 rng3 = np.random.RandomState(5)
@@ -798,6 +807,100 @@ rows = sum((len(e.var.values) if e.var.is_discrete else
 esperado = min(int(round(0.7 * len(a.sample))), max(E.MIN_PD_ROWS, E.PD_ROW_BUDGET // rows))
 # (heart tiene 13 atributos: el presupuesto es el básico)
 check(n_pds == {esperado}, f"fondo determinista: {n_pds} (esperado {esperado})")
+
+# ---------------------------------------------------------------------------
+print("9. Correcciones de la 0.7.3")
+# 9.1 cancelar, cambiar o cerrar a mitad de la dependencia parcial tarda < 1 s
+rng9 = np.random.RandomState(4)
+X9 = rng9.normal(size=(4000, 12))
+y9 = (np.sin(X9[:, 0] * 2) + X9[:, 1] * X9[:, 2] + rng9.normal(scale=0.5, size=4000) > 0)
+T9 = Table.from_numpy(Domain([ContinuousVariable(f"s{i}") for i in range(12)],
+                             DiscreteVariable("y", values=("0", "1"))), X9, y9.astype(float))
+svm9 = silent(SVMLearner(probability=True), T9)
+tree9 = silent(Mo.TreeLearner(), T9)
+
+
+def bombear(seg):
+    t = time.time()
+    while time.time() - t < seg:
+        app.processEvents()
+        time.sleep(0.005)
+
+
+b = Banco()
+b.w.set_model(svm9)
+b.w.set_data(T9)
+b.w.set_instance(None)
+b.w.handleNewSignals()
+bombear(1.5)
+ocupado = b.w.task is not None
+t0 = time.time()
+b.w.set_model(tree9)
+b.w.handleNewSignals()
+b.esperar()
+dt = time.time() - t0
+print(f"   cambiar de modelo a mitad del cálculo: {dt:.2f} s")
+check(ocupado, "la prueba de cancelación empieza con el cálculo en marcha")
+check(dt < 1.0, f"cambiar de modelo a mitad: {dt:.2f} s")
+check(b.w.analysis is not None and b.w.analysis.model is tree9, "el resultado es el del modelo nuevo")
+b.w.set_model(svm9)
+b.w.handleNewSignals()
+bombear(1.5)
+ocupado = b.w.task is not None
+t0 = time.time()
+b.w.onDeleteWidget()
+dt = time.time() - t0
+print(f"   cerrar a mitad del cálculo: {dt:.2f} s")
+check(ocupado, "la prueba de cierre empieza con el cálculo en marcha")
+check(dt < 1.0, f"cerrar a mitad: {dt:.2f} s")
+b.w.deleteLater()
+app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+# el reparto en trozos no cambia el resultado
+m10 = silent(RandomForestLearner(n_estimators=20, random_state=0), HEART)
+a1 = E.analyze(m10, HEART, method=E.PARTIAL_DEPENDENCE)
+orig_tune = E.Predictor.tune
+E.Predictor.tune = lambda self, per_row: setattr(self, "chunk", 777)
+a2 = E.analyze(m10, HEART, method=E.PARTIAL_DEPENDENCE)
+E.Predictor.tune = orig_tune
+v1, v2 = a1.target_view(1), a2.target_view(1)
+check(all(np.array_equal(v1.grid_component(e1), v2.grid_component(e2))
+          for e1, e2 in zip(v1.effects, v2.effects)) and v1.base == v2.base,
+      "el tamaño de los trozos no cambia el nomograma")
+
+# 9.2 Data sin valores con un modelo aproximado: datos de entrenamiento y aviso
+HU = HEART.copy()
+with HU.unlocked():
+    HU.X[:] = np.nan
+for seed in range(3):
+    mr = silent(RandomForestLearner(n_estimators=10, random_state=seed), HEART)
+    b = Banco()
+    b.enviar(mr, HU)
+    w = b.w
+    check(not w.Error.active and w.view_ is not None and w.rows,
+          f"RF {seed} con Data sin valores: se dibuja ({[str(m) for m in w.Error.active]})")
+    check(w.Warning.reference.is_shown() and "entrenamiento" in str(w.Warning.reference),
+          f"RF {seed} con Data sin valores: aviso")
+    check(w.analysis.n_reference == len(HEART), "la referencia son los de entrenamiento")
+    b.cerrar()
+mr.original_data = None
+b = Banco()
+b.enviar(mr, HU)
+check(b.w.Error.unsupported.is_shown() and "valor conocido" in str(b.w.Error.unsupported),
+      "RF con Data sin valores y sin entrenamiento: error claro")
+b.cerrar()
+
+# 9.3 la clave del orden distingue «?» de cualquier valor
+Xk = np.array([[np.nan, 1.0], [-0.123456789, 1.0], [0.0, 1.0]])
+rs = np.random.RandomState(12345)
+r, q = rs.normal(size=2), rs.normal(size=2)
+claves = np.nan_to_num(Xk, nan=0.0) @ r + np.isnan(Xk) @ q
+check(len(set(np.round(claves, 12))) == 3, "«?», el centinela antiguo y 0 tienen claves distintas")
+XX = np.array([[np.nan, 1.0], [0.0, 1.0]] * 50 + [[float(i), 2.0] for i in range(200)])
+o1 = E.canonical_order(XX)
+perm = np.random.RandomState(2).permutation(len(XX))
+o2 = E.canonical_order(XX[perm])
+check(np.array_equal(XX[o1], XX[perm][o2], equal_nan=True),
+      "orden canónico igual con desconocidos y ceros, en cualquier orden de entrada")
 
 # ---------------------------------------------------------------------------
 print("6. Tiempos con una tabla mediana")

@@ -517,8 +517,12 @@ class OWNomogramPro(OWWidget, ConcurrentWidgetMixin):
         self.Error.not_finite.clear()
         view = a.target_view(target, self.space_index)
         # red de seguridad: nunca se presenta como válido algo no finito
+        # (un categórico sin ninguna categoría con datos en la muestra es válido:
+        # se dibuja como «sin datos»)
         finite = np.isfinite(view.base) and all(
-            np.isfinite(view.grid_component(e)).any() for e in view.effects)
+            np.isfinite(view.grid_component(e)).any()
+            or (e.unsupported is not None and e.unsupported.all())
+            for e in view.effects)
         if not finite:
             self.view_ = None
             self.Error.not_finite(a.class_var.values[target]
@@ -851,6 +855,8 @@ class OWNomogramPro(OWWidget, ConcurrentWidgetMixin):
         xs = np.array([self._px(p) for p in pts[ok]])
         ly = row.line_y
         if not len(xs):
+            self._text("sin datos en la muestra: no se puede estimar su efecto",
+                       self._x0, ly - 8, self._small, color=NEUTRAL)
             return
         row.xs, row.values = xs, np.flatnonzero(ok).astype(float)
         row.left, row.right = float(xs.min()), float(xs.max())

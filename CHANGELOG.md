@@ -3,6 +3,18 @@
 Cada versión se publica a la vez en GitHub (release `vX.Y.Z`) y en
 [PyPI](https://pypi.org/project/orange-gualbe-toolbox/).
 
+## 0.7.3 (2026-11-14)
+
+- **Nomogram Pro**: correcciones.
+  - Corregido: un cálculo largo (por ejemplo, una SVM con núcleo RBF) no se podía interrumpir, así
+    que cambiar de modelo o de datos, o cerrar el widget, esperaba a que terminara. Ahora responde
+    en menos de un segundo, con el mismo resultado.
+  - Corregido: con unos datos de entrada sin ningún valor conocido, un modelo aproximado daba un
+    nomograma vacío o un error de valores no finitos. Ahora se usan los datos de entrenamiento,
+    con un aviso, o, si el modelo no los guarda, un error que lo explica.
+  - Corregido: en el orden interno que hace la muestra independiente del orden de las filas, un
+    valor desconocido podía empatar con un valor concreto.
+
 ## 0.7.2 (2026-11-14)
 
 - **Nomogram Pro**: correcciones.

@@ -48,7 +48,9 @@ SPACE_AUTO, SPACE_PROB, SPACE_LOGIT = 0, 1, 2
 LOGIT_EPS = 1e-3          # recorte de las probabilidades en log-odds
 EXACT_TOL = 1e-7          # tolerancia relativa de la verificación exacta
 FINE_GRID = 101           # puntos de un efecto continuo exacto no lineal
-MAX_ROWS_PER_CALL = 100_000
+MAX_ROWS_PER_CALL = 100_000   # filas que se agrupan en la dependencia parcial
+CHUNK_SECONDS = 0.5           # duración de cada trozo que se predice: entre trozo y
+CHUNK_MIN, CHUNK_MAX = 500, 50_000   # trozo se comprueba si hay que interrumpir
 MIN_PD_ROWS = 50
 # escala de probabilidad aproximada con varias clases: error medio, percentil 95
 # y máximo admitidos en los datos de referencia
@@ -639,8 +641,11 @@ def canonical_order(X):
     """
     if not len(X):
         return np.arange(0)
-    r = np.random.RandomState(12345).normal(size=X.shape[1])
-    key = np.nan_to_num(X, nan=-0.123456789, posinf=1e300, neginf=-1e300) @ r
+    rs = np.random.RandomState(12345)
+    r, q = rs.normal(size=X.shape[1]), rs.normal(size=X.shape[1])
+    # los desconocidos van en un término aparte: «?» nunca empata con un valor
+    nan = np.isnan(X)
+    key = np.nan_to_num(X, nan=0.0, posinf=1e300, neginf=-1e300) @ r + nan @ q
     return np.argsort(key, kind="stable")
 
 
@@ -712,13 +717,23 @@ class Predictor:
         self.kind = kind
         self.state = state
         self.rows = 0
+        self.chunk = 2000
+
+    def tune(self, per_row):
+        """Trozos de unos ``CHUNK_SECONDS``: cancelar o cerrar nunca espera más.
+
+        Solo cambia cómo se reparte el trabajo, no el resultado: cada fila se
+        predice igual.
+        """
+        self.chunk = int(min(CHUNK_MAX, max(CHUNK_MIN,
+                                            CHUNK_SECONDS / max(per_row, 1e-9))))
 
     def __call__(self, X):
         out = []
-        for start in range(0, len(X), MAX_ROWS_PER_CALL):
+        for start in range(0, len(X), self.chunk):
             if self.state is not None and self.state.is_interruption_requested():
                 raise Cancelled
-            chunk = X[start:start + MAX_ROWS_PER_CALL]
+            chunk = X[start:start + self.chunk]
             t = _make_table(self.adom, chunk)
             if self.kind == "classification":
                 p = np.asarray(self.model(t, self.model.Probs), dtype=float)
@@ -1063,6 +1078,18 @@ def analyze(model, data=None, *, method=METHOD_AUTO,
                 f"{_plural(len(ref), 'fila', 'filas')}: los rangos, la distribución "
                 "y la fidelidad no son fiables (hacen falta al menos "
                 f"{MIN_REFERENCE_ROWS}).")
+    if ref is not None and source == "data" and np.isnan(_dense(ref.X)).all():
+        od = getattr(model, "original_data", None)
+        if od is not None and len(od):
+            analysis.warnings.append(
+                "Data no tiene ningún valor conocido en los atributos del modelo: "
+                "la referencia son los datos de entrenamiento.")
+            ref, source = od.transform(adom), "training"
+        else:
+            raise NomogramError(
+                "Data no tiene ningún valor conocido en los atributos del modelo y "
+                "el modelo no guarda sus datos de entrenamiento: conecta datos con "
+                "valores a la entrada Data.")
     sample = None
     rcols = None
     extra = (np.zeros((0, len(adom.attributes))), np.zeros(0))
@@ -1114,7 +1141,7 @@ def analyze(model, data=None, *, method=METHOD_AUTO,
                           seed, state, test, train, extra,
                           start=60 if method == METHOD_AUTO else 5)
     if kind == "regression" and ref is not None:
-        _residuals(analysis, model, ref, data, source)
+        _residuals(analysis, model, ref, data, source, state)
     analysis.seconds = time.perf_counter() - t0
     return analysis
 
@@ -1128,7 +1155,7 @@ def holdout_split(n, seed=0):
     return np.sort(perm[:n_test]), np.sort(perm[n_test:])
 
 
-def _residuals(analysis, model, ref, data, source):
+def _residuals(analysis, model, ref, data, source, state=None):
     cv = analysis.class_var
     table = data if source == "data" else getattr(model, "original_data", None)
     if table is None or table.domain.class_var is None \
@@ -1141,7 +1168,7 @@ def _residuals(analysis, model, ref, data, source):
     ok = ~np.isnan(yy)
     if ok.sum() < 10:
         return
-    pred = Predictor(model, analysis.domain, "regression")(sample[ok])[:, 0]
+    pred = Predictor(model, analysis.domain, "regression", state)(sample[ok])[:, 0]
     analysis.residuals = yy[ok] - pred
     analysis.residuals_on_training = source == "training"
 
@@ -1446,6 +1473,7 @@ def _partial_dependence(analysis, rcols, sample, grid_size, predictor,
     t0 = time.perf_counter()
     predictor(pilot)
     per_row = (time.perf_counter() - t0) / max(1, len(pilot))
+    predictor.tune(per_row)
     nan_ok = _handles_nan(predictor, sample)
     analysis.has_nan_effect = nan_ok
     rows_per_sample = sum(len(s["grid"]) + nan_ok for s in specs)
