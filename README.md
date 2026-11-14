@@ -31,6 +31,7 @@ español (F1 o icono **?**).
 | **File Import Pro** | Importa datos desde un archivo o una URL (CSV, TSV, TAB, XLS/XLSX y ARFF) con vista previa y edición de columnas. |
 | **Test & Score Pro** | Evalúa modelos como Test & Score y los compara con tests estadísticos rigurosos, gráficos e informe exportable. |
 | **Data Table Pro** | Muestra varias tablas en pestañas y las edita como una hoja de cálculo: ordenar, reordenar columnas, editar, buscar y reemplazar, tipos y roles; salen las tablas de la pestaña activa. |
+| **Nomogram Pro** | Nomograma de cualquier modelo de clasificación o regresión: exacto para los aditivos y aproximado, con su fidelidad, para el resto; los valores se cambian arrastrando y la predicción es la del modelo real. |
 
 ### SMOTE
 
@@ -134,6 +135,36 @@ Parte del **Data Table** de Orange y lo convierte en un editor de tablas:
   columna tardan menos de un segundo, y buscar en toda la tabla, unos 2 segundos la primera vez.
 - Solo reenvía las salidas que cambian, para no recalcular lo que cuelga del nodo.
 
+### Nomogram Pro
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/gualbe/orange_gualbe_toolbox/main/assets/captura_nomogrampro.png" alt="Nomogram Pro con una regresión logística: escalas de puntos por atributo, contribuciones de la instancia y probabilidad al pie" width="760">
+</p>
+
+Parte del **Nomogram** de Orange, que solo admite regresión logística y Naive Bayes, y lo amplía:
+
+- **Clasificación y regresión**, con **todos los modelos del panel Model**.
+- **Modo exacto** para los modelos aditivos (regresión logística, Naive Bayes, regresión lineal,
+  Ridge, Lasso, Elastic Net, SGD, SVM lineal y PLS): la suma de puntos reproduce el modelo, y el
+  widget lo comprueba numéricamente. Los coeficientes se llevan a los atributos originales aunque
+  el modelo los preprocese (indicadores, normalización, imputación, discretización).
+- **Modo aproximado** para el resto (árboles, bosques, boosting con xgboost y catboost, kNN, SVM
+  con núcleo, redes neuronales, reglas, *stacking*…): dependencia parcial o ajuste aditivo directo,
+  el más fiel, con su **fidelidad** (R², error medio y acuerdo en la clase) siempre a la vista.
+- La predicción mostrada es **siempre la del modelo real**, y el widget avisa si la suma de
+  puntos se aleja de ella. Banda de **incertidumbre**: dispersión entre los árboles de un bosque o
+  error típico en regresión.
+- **Interactivo**: arrastra los valores o escríbelos; contribuciones de la instancia frente a la
+  media, distribución de los datos bajo cada escala, colores por signo, curvas para los efectos
+  que suben y bajan, orden por rango, importancia o contribución, y los N más importantes con el
+  resto sumado aparte.
+- Entradas **Data** (referencia) e **Instance** (valores iniciales); salidas **Features**,
+  **Instance** y **Contributions**. Cálculo en segundo plano, con muestra acotada.
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/gualbe/orange_gualbe_toolbox/main/assets/captura_nomogrampro_regresion.png" alt="Nomogram Pro con un Random Forest de regresión: aproximación con su fidelidad y banda de dispersión de los árboles" width="760">
+</p>
+
 ## Ayuda de los widgets
 
 La ayuda (F1 / icono "?") se genera con Sphinx dentro del propio paquete y debe
@@ -191,7 +222,7 @@ académico, puedes tomar los metadatos de
 (GitHub ofrece «Cite this repository» con el formato APA o BibTeX), por ejemplo:
 
 > Asencio Cortés, G. (2026). *orange_gualbe_toolbox: utilidades visuales de ciencia
-> de datos para Orange Data Mining* (versión 0.6.0) [Software]. Zenodo.
+> de datos para Orange Data Mining* (versión 0.7.0) [Software]. Zenodo.
 > https://doi.org/10.5281/zenodo.24144757
 
 **Componentes de terceros.** El add-on depende de Orange Data Mining (GPL-3.0 o

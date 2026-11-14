@@ -183,3 +183,37 @@ time.sleep(0.2)
 app.processEvents()
 tabla.grab().save(os.path.join(AQUI, "captura_datatablepro.png"))
 tabla.onDeleteWidget()
+
+
+# ------------------------------------------------------------ Nomogram Pro ----
+from orangecontrib.orange_gualbe_toolbox.widgets.ownomogrampro import OWNomogramPro  # noqa: E402
+
+
+def nomograma(modelo, datos, instancia, nombre, **ajustes):
+    base = dict(scale_index=0, sort_index=2, n_attributes=7, show_all=False,
+                method_index=0, space_index=0, sample_size=1000, grid_size=20,
+                show_distribution=True, show_contributions=True, saved_values={},
+                target_class_name="")
+    base.update(ajustes)
+    widget = OWNomogramPro.__new__(OWNomogramPro, signal_manager=None, stored_settings=base)
+    widget.__init__()
+    widget.show()
+    widget.resize(1400, 900)
+    widget.set_model(modelo)
+    widget.set_data(datos)
+    widget.set_instance(instancia)
+    widget.handleNewSignals()
+    esperar(widget)
+    for _ in range(20):  # la escena se recoloca al cambiar el tamaño de la vista
+        app.processEvents()
+        time.sleep(0.02)
+    widget.grab().save(os.path.join(AQUI, nombre))
+    widget.onDeleteWidget()
+
+
+corazon = Table("heart_disease")
+nomograma(LogisticRegressionLearner()(corazon), corazon, corazon[42:43],
+          "captura_nomogrampro.png", target_class_name="1", n_attributes=6)
+casas = Table("housing")
+nomograma(RandomForestRegressionLearner(random_state=0)(casas), casas, casas[7:8],
+          "captura_nomogrampro_regresion.png", n_attributes=5)

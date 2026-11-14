@@ -11,6 +11,7 @@ Utilidades visuales de ciencia de datos para Orange Data Mining.
    widgets/fileimport
    widgets/testscorepro
    widgets/datatablepro
+   widgets/nomogrampro
 
 .. toctree::
    :maxdepth: 1

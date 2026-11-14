@@ -3,6 +3,19 @@
 Cada versión se publica a la vez en GitHub (release `vX.Y.Z`) y en
 [PyPI](https://pypi.org/project/orange-gualbe-toolbox/).
 
+## 0.7.0 (2026-11-14)
+
+- Nuevo widget **Nomogram Pro**: nomograma de cualquier modelo de clasificación o de regresión del
+  panel Model. Es **exacto** para los modelos aditivos (regresión logística, Naive Bayes, regresión
+  lineal, Ridge, Lasso, Elastic Net, SGD, SVM lineal y PLS), con una verificación numérica, y
+  **aproximado** para el resto (dependencia parcial o ajuste aditivo directo, el más fiel), con su
+  **fidelidad** siempre a la vista. La predicción que muestra es siempre la del modelo real.
+- Valores que se cambian arrastrando o escribiendo, contribuciones de la instancia, distribución
+  de los datos bajo cada escala, banda de incertidumbre (árboles de un bosque o error típico en
+  regresión), orden por rango, importancia o contribución, y los N atributos más importantes.
+- Entradas *Model*, *Data* e *Instance*; salidas *Features*, *Instance* y *Contributions*. Imagen e
+  informe.
+
 ## 0.6.0 (2026-11-14)
 
 - **Data Table Pro** tiene ahora dos salidas, **Data** y **Selected Data**, que son siempre las de la
