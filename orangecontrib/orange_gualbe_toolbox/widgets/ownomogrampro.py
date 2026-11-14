@@ -21,7 +21,7 @@ from AnyQt.QtWidgets import (
 )
 
 from Orange.base import Model
-from Orange.data import ContinuousVariable, Domain, StringVariable, Table
+from Orange.data import ContinuousVariable, DiscreteVariable, Domain, StringVariable, Table
 from Orange.widgets import gui
 from Orange.widgets.settings import Setting
 from Orange.widgets.utils.concurrent import ConcurrentWidgetMixin
@@ -67,9 +67,13 @@ def fidelity_summary(view):
     a = view.analysis
     fid = view.fidelity
     link = view.link
+    multi = a.kind == "classification" and view.mask.sum() > 2
     if a.mode == E.EXACT:
         parts = ["<b>✔ Nomograma exacto</b>: la suma de los puntos reproduce la "
                  "puntuación del modelo"]
+        if multi:
+            parts = ["<b>✔ Puntuación exacta</b>: la suma de los puntos reproduce la "
+                     "puntuación de la clase (log-odds frente a la media de las demás)"]
         if fid.get("max_error") is not None:
             parts[0] += (f" (error relativo máximo {E.format_number(fid['max_error'], 2)}"
                          f" en {fid.get('rows', 0)} filas)")
@@ -77,22 +81,28 @@ def fidelity_summary(view):
         if a.kind == "classification":
             if link.kind == "logistic":
                 parts.append("La escala de probabilidad también es exacta.")
+            elif link.kind == "monotone" and multi:
+                parts.append(
+                    "<span style='color:#975A16'><b>≈ Escala de probabilidad "
+                    "aproximada</b>: con más de dos clases la probabilidad depende de "
+                    "todas (error medio "
+                    f"{E.format_number(fid.get('mae', float('nan')), 2)}, percentil 95 "
+                    f"{E.format_number(fid.get('p95', float('nan')), 2)} y máximo "
+                    f"{E.format_number(fid.get('max_abs', float('nan')), 2)} en los datos "
+                    "de referencia). La probabilidad buena es la del modelo real.</span>")
             elif link.kind == "monotone":
                 parts.append(
                     "La escala de probabilidad es aproximada (error medio "
-                    f"{E.format_number(fid.get('mae', float('nan')), 2)}): "
-                    + ("con más de dos clases la probabilidad depende de todas."
-                       if view.mask.sum() > 2 else
-                       "el modelo calibra la probabilidad de forma no exactamente "
-                       "logística."))
+                    f"{E.format_number(fid.get('mae', float('nan')), 2)}): el modelo "
+                    "calibra la probabilidad de forma no exactamente logística.")
             elif link.kind == "decision":
                 parts.append("El modelo no da probabilidades: el pie muestra su "
                              "puntuación de decisión.")
             elif link.kind == "score":
-                parts.append("Con más de dos clases la probabilidad depende de todas: "
-                             "el pie muestra la puntuación de la clase (log-odds frente "
-                             "a la media de las demás) y la probabilidad real se da "
-                             "debajo.")
+                parts.append("<span style='color:#975A16'>Con más de dos clases la "
+                             "probabilidad depende de todas y ninguna escala la "
+                             "representa bien: el pie muestra la puntuación y la "
+                             "probabilidad real se da debajo.</span>")
         return "<br/>".join(parts), "ok"
     var = view.variant
     method = {"pd": "dependencia parcial", "fit": "ajuste aditivo directo"}.get(
@@ -113,7 +123,10 @@ def fidelity_summary(view):
         detail += (f", error medio {E.format_number(fid.get('mae', float('nan')), 3)}"
                    f" ({E.format_number(100 * fid.get('mae', 0) / fid.get('scale', 1), 2)}"
                    " % de su desviación)")
-    detail += f" en {fid.get('rows', 0)} filas."
+    held = var.holdout is not None and a.sample is not None \
+        and len(var.holdout) < len(a.sample)
+    detail += (f" en {fid.get('rows', 0)} filas"
+               + (" apartadas (no usadas para construirlo)." if held else "."))
     lines.append(detail)
     lines.append({"ok": "Alta: el nomograma representa bien al modelo.",
                   "medium": "Media: el modelo tiene interacciones que el nomograma no "
@@ -265,6 +278,7 @@ class OWNomogramPro(OWWidget, ConcurrentWidgetMixin):
         difference = Msg("En esta instancia la suma aditiva ({}) se aleja de la "
                          "predicción del modelo real ({}).")
         instance = Msg("{}")
+        reference = Msg("{}")
 
     class Information(OWWidget.Information):
         notes = Msg("{}")
@@ -475,6 +489,8 @@ class OWNomogramPro(OWWidget, ConcurrentWidgetMixin):
         self.values = self._initial_values(prev_names)
         if analysis.notes:
             self.Information.notes(" ".join(analysis.notes))
+        if analysis.warnings:
+            self.Warning.reference(" ".join(analysis.warnings))
         self._refresh_controls()
         self._make_view()
 
@@ -536,13 +552,8 @@ class OWNomogramPro(OWWidget, ConcurrentWidgetMixin):
         effects = {e.index: e for e in next(iter(a.variants.values())).effects}
         for i, var in enumerate(a.domain.attributes):
             e = effects[i]
-            col = a.sample[:, i] if a.sample is not None else None
-            if col is not None and np.isfinite(col).any():
-                known = col[np.isfinite(col)]
-                if var.is_discrete:
-                    values[i] = float(np.bincount(known.astype(int)).argmax())
-                else:
-                    values[i] = float(np.median(known))
+            if np.isfinite(e.typical):
+                values[i] = e.typical
             elif e.kind == "discrete":
                 values[i] = 0.0
             elif e.kind == "bins":
@@ -628,7 +639,7 @@ class OWNomogramPro(OWWidget, ConcurrentWidgetMixin):
         if self.sort_index == SORT_NAME:
             effects.sort(key=lambda e: e.name.lower())
         elif self.sort_index == SORT_RANGE:
-            rng = {e.index: np.ptp(view.grid_component(e)) for e in effects}
+            rng = {e.index: E.span(view.grid_component(e)) for e in effects}
             effects.sort(key=lambda e: -rng[e.index])
         elif self.sort_index == SORT_DATA:
             effects.sort(key=lambda e: -view.importance(e))
@@ -807,7 +818,7 @@ class OWNomogramPro(OWWidget, ConcurrentWidgetMixin):
     def _row_tooltip(self, e):
         view = self.view_
         lines = [f"<b>{e.name}</b>",
-                 f"Rango: {E.format_number(np.ptp(view.grid_component(e)) * self.scale.k, 3)}"
+                 f"Rango: {E.format_number(E.span(view.grid_component(e)) * self.scale.k, 3)}"
                  " puntos"]
         if e.cov is not None:
             lines.append("Importancia en los datos (desviación de su contribución): "
@@ -818,19 +829,31 @@ class OWNomogramPro(OWWidget, ConcurrentWidgetMixin):
         return "<br/>".join(lines)
 
     def _draw_discrete(self, row, e, pts):
-        xs = np.array([self._px(p) for p in pts])
+        pts = np.asarray(pts, dtype=float)
+        ok = np.isfinite(pts)    # sin efecto estimado: categorías sin datos
+        xs = np.array([self._px(p) for p in pts[ok]])
         ly = row.line_y
         if not len(xs):
             return
-        row.xs, row.values = xs, np.arange(len(xs), dtype=float)
+        row.xs, row.values = xs, np.flatnonzero(ok).astype(float)
         row.left, row.right = float(xs.min()), float(xs.max())
+        values_ok = row.values.astype(int)
         self._line(row.left, ly, row.right, ly, width=1.2)
-        labels = e.labels if e.labels else [str(i) for i in range(len(xs))]
-        counts = e.counts if e.counts is not None else None
+        all_labels = e.labels if e.labels else [str(i) for i in range(len(pts))]
+        labels = [all_labels[v] for v in values_ok]
+        counts = e.counts[values_ok] if e.counts is not None else None
         total = counts.sum() if counts is not None and counts.sum() else None
         order = np.argsort(xs)
         fm = QFontMetricsF(self._small)
         levels = [-1e9, -1e9]
+        if not ok.all():
+            missing = [all_labels[i] for i in np.flatnonzero(~ok)]
+            self._text(f"sin datos: {len(missing)}", self._x1, ly + 12, self._small,
+                       color=NEUTRAL, anchor="right",
+                       tooltip="Categorías sin filas en la muestra de referencia: el "
+                               "ajuste aditivo no estima su efecto y no se dibujan "
+                               "(si la instancia toma una, cuenta como la media):<br/>"
+                               + ", ".join(missing))
         for i in order:
             x = xs[i]
             self._line(x, ly - 4, x, ly + 4)
@@ -976,9 +999,18 @@ class OWNomogramPro(OWWidget, ConcurrentWidgetMixin):
             comp = comps[e.index]
             color = POSITIVE if comp > 1e-12 else (NEGATIVE if comp < -1e-12 else NEUTRAL)
             label = self._effect_label(e, value)
-            self._text(f"= {label}", 8, row.y + 24, self._font, color=color, dynamic=True)
-            x, y = self._marker_pos(row, value, points[e.index])
             unknown = value is None or np.isnan(value)
+            no_data = (not unknown and e.unsupported is not None
+                       and 0 <= int(value) < len(e.unsupported)
+                       and bool(e.unsupported[int(value)]))
+            if no_data:
+                color = NEUTRAL
+                label += " (sin datos)"
+            self._text(f"= {label}", 8, row.y + 24, self._font, color=color, dynamic=True,
+                       tooltip="Sin filas en la muestra de referencia: no tiene efecto "
+                               "estimado y cuenta como la media." if no_data else None)
+            x, y = self._marker_pos(row, value, points[e.index])
+            unknown = unknown or no_data
             r = 7
             item = self.scene.addEllipse(
                 QRectF(x - r, y - r, 2 * r, 2 * r),
@@ -988,7 +1020,7 @@ class OWNomogramPro(OWWidget, ConcurrentWidgetMixin):
             item.setToolTip(f"{e.name} = {label}: {self._contrib_text(comp)} "
                             f"{'puntos' if self.scale_index == POINTS else ''}")
             self._dynamic.append(item)
-            if unknown:
+            if unknown and not no_data:
                 self._text("?", x, y - 8, self._bold, color=color, anchor="center",
                            dynamic=True)
             if self._contrib:
@@ -1361,27 +1393,47 @@ class OWNomogramPro(OWWidget, ConcurrentWidgetMixin):
         return table
 
     def _contributions_table(self):
+        """Una fila por atributo y otra con la base, coherentes con lo que se ve.
+
+        - «Puntos»: los de cada atributo mostrado, como en su escala; los ocultos no
+          están en ninguna escala y no tienen puntos. La columna suma los «Puntos
+          totales» del widget.
+        - «Contribución»: lo que cada atributo suma a la puntuación frente a la media;
+          la fila «Base» es la puntuación media. Base + contribuciones = puntuación de
+          la instancia (log-odds, probabilidad o valor, según la escala del modelo).
+        """
         view = self.view_
         scale = self.scale or E.point_scale(view)
-        order = self._ordered_effects()
+        shown = self.shown if self.shown or self.hidden else self._ordered_effects()
+        shown_ids = {e.index for e in shown}
+        order = list(shown) + [e for e in self._ordered_effects()
+                               if e.index not in shown_ids]
         unit = "log-odds" if view.variant.space in ("score", "logit") else (
             "probabilidad" if view.variant.space == "prob" else "valor")
+        if view.link.kind == "decision":
+            unit = "puntuación"
         cols = [ContinuousVariable("Puntos"),
                 ContinuousVariable(f"Contribución ({unit})"),
                 ContinuousVariable("Rango de puntos"),
                 ContinuousVariable("Importancia en los datos (puntos)")]
-        metas = [StringVariable("Atributo"), StringVariable("Valor")]
+        metas = [StringVariable("Atributo"), StringVariable("Valor"),
+                 DiscreteVariable("Mostrado", values=("no", "sí"))]
         domain = Domain(cols, metas=metas)
         X, M = [], []
         for e in order:
             comp = float(view.component(e, [self.values[e.index]])[0])
             gcomp = view.grid_component(e)
-            lo = scale.mins.get(e.index, float(np.nanmin(gcomp)))
-            X.append([(comp - lo) * scale.k, comp, np.ptp(gcomp) * scale.k,
+            visible = e.index in shown_ids and e.index in scale.mins
+            points = (comp - scale.mins[e.index]) * scale.k if visible else np.nan
+            X.append([points, comp, E.span(gcomp) * scale.k,
                       view.importance(e) * scale.k])
-            M.append([e.name, self._effect_label(e, self.values[e.index])])
+            M.append([e.name, self._effect_label(e, self.values[e.index]),
+                      1.0 if visible else 0.0])
+        # la base: puntuación media de la referencia (la de cero contribuciones)
+        X.append([np.nan, float(view.base), np.nan, np.nan])
+        M.append(["Base (media de la referencia)", "", np.nan])
         table = Table.from_numpy(domain, np.array(X, dtype=float).reshape(-1, 4),
-                                 metas=np.array(M, dtype=object).reshape(-1, 2))
+                                 metas=np.array(M, dtype=object).reshape(-1, 3))
         table.name = "Contribuciones"
         return table
 

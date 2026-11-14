@@ -150,7 +150,8 @@ Parte del **Nomogram** de Orange, que solo admite regresión logística y Naive 
   el modelo los preprocese (indicadores, normalización, imputación, discretización).
 - **Modo aproximado** para el resto (árboles, bosques, boosting con xgboost y catboost, kNN, SVM
   con núcleo, redes neuronales, reglas, *stacking*…): dependencia parcial o ajuste aditivo directo,
-  el más fiel, con su **fidelidad** (R², error medio y acuerdo en la clase) siempre a la vista.
+  el más fiel, con su **fidelidad** (R², error medio y acuerdo en la clase, medidos en filas
+  apartadas) siempre a la vista.
 - La predicción mostrada es **siempre la del modelo real**, y el widget avisa si la suma de
   puntos se aleja de ella. Banda de **incertidumbre**: dispersión entre los árboles de un bosque o
   error típico en regresión.
@@ -159,7 +160,9 @@ Parte del **Nomogram** de Orange, que solo admite regresión logística y Naive 
   que suben y bajan, orden por rango, importancia o contribución, y los N más importantes con el
   resto sumado aparte.
 - Entradas **Data** (referencia) e **Instance** (valores iniciales); salidas **Features**,
-  **Instance** y **Contributions**. Cálculo en segundo plano, con muestra acotada.
+  **Instance** y **Contributions** (puntos que suman el total del widget y contribuciones que,
+  con la base, dan la predicción). Cálculo en segundo plano, con muestra acotada: un *Random
+  Forest* de 100 árboles tarda alrededor de 1 segundo con 20 atributos y unos 2 con 300.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/gualbe/orange_gualbe_toolbox/main/assets/captura_nomogrampro_regresion.png" alt="Nomogram Pro con un Random Forest de regresión: aproximación con su fidelidad y banda de dispersión de los árboles" width="760">
@@ -222,7 +225,7 @@ académico, puedes tomar los metadatos de
 (GitHub ofrece «Cite this repository» con el formato APA o BibTeX), por ejemplo:
 
 > Asencio Cortés, G. (2026). *orange_gualbe_toolbox: utilidades visuales de ciencia
-> de datos para Orange Data Mining* (versión 0.7.0) [Software]. Zenodo.
+> de datos para Orange Data Mining* (versión 0.7.1) [Software]. Zenodo.
 > https://doi.org/10.5281/zenodo.24144757
 
 **Componentes de terceros.** El add-on depende de Orange Data Mining (GPL-3.0 o

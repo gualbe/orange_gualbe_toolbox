@@ -525,8 +525,8 @@ w = b.w
 feats = b.out.get("features")
 check(feats is not None and len(feats) == 5, "Features: los 5 mostrados")
 contrib = b.out.get("contributions")
-check(contrib is not None and len(contrib) == len(HEART.domain.attributes),
-      "Contributions: una fila por atributo")
+check(contrib is not None and len(contrib) == len(HEART.domain.attributes) + 1,
+      "Contributions: una fila por atributo y la base")
 inst = b.out.get("instance")
 check(inst is not None and np.array_equal(inst.X[0], HEART.X[10], equal_nan=True),
       "Instance: los valores de la entrada")
@@ -535,8 +535,9 @@ view = w.view_
 total = sum(float(view.component(e, [w.values[e.index]])[0]) for e in view.effects)
 check(abs(view.base + total - view.score(w.values)) < 1e-9, "contribuciones + base = puntuación")
 pts = contrib.X[:, 0]
-check(np.all(pts >= -1e-9) and np.nanmax(contrib.X[:, 2]) <= 100 + 1e-9,
-      "Contributions: puntos entre 0 y 100")
+pts = pts[np.isfinite(pts)]
+check(len(pts) == 5 and np.all(pts >= -1e-9) and np.nanmax(contrib.X[:, 2]) <= 100 + 1e-9,
+      "Contributions: puntos entre 0 y 100 en los 5 mostrados")
 # la suma de puntos y el pie: puntuación desde los puntos totales
 comps, hidden, points, total_pts, score = w._current()
 check(abs(w.scale.score_of_total(total_pts) + hidden - score) < 1e-9,
@@ -579,6 +580,143 @@ check(b.out.get("features") is None and b.out.get("instance") is None, "sin mode
 b.enviar(silent(LinearRegressionLearner(), HOUSING), HEART)
 check(not b.w.Error.active, "regresión con Data de otra tabla: usa los de entrenamiento")
 b.cerrar()
+
+# ---------------------------------------------------------------------------
+print("7. Correcciones de la 0.7.1")
+# 7.1 Contributions cuadra con lo que se ve, también con atributos ocultos
+for nombre, learner, n_show in (("LR", LogisticRegressionLearner(), 4),
+                                ("RF", RandomForestLearner(n_estimators=30), 5)):
+    m = silent(learner, HEART)
+    b = Banco(n_attributes=n_show, target_class_name="1")
+    b.enviar(m, HEART, HEART[3:4])
+    w = b.w
+    t = b.out["contributions"]
+    comps, hidden, points, total_pts, score = w._current()
+    pts = t.X[:, 0]
+    contrib = t.X[:, 1]
+    mostrado = t.get_column("Mostrado")
+    check(abs(np.nansum(pts) - total_pts) < 1e-9,
+          f"{nombre}: suma de Puntos {np.nansum(pts)} = puntos totales {total_pts}")
+    check(abs(contrib.sum() - score) < 1e-9,
+          f"{nombre}: base + contribuciones {contrib.sum()} = puntuación {score}")
+    check(int(np.nansum(mostrado)) == n_show and np.isnan(pts[mostrado == 0]).all(),
+          f"{nombre}: solo los mostrados tienen puntos")
+    check(t.metas[-1, 0].startswith("Base"), f"{nombre}: la última fila es la base")
+    b.cerrar()
+
+# 7.2 Data sin valores conocidos o con una columna constante: rangos de entrenamiento
+m = silent(LogisticRegressionLearner(), HEART)
+vacia = HEART.copy()
+with vacia.unlocked():
+    vacia.X[:] = np.nan
+ref = E.analyze(m)
+a = E.analyze(m, vacia)
+rangos = {e.name: (e.lo, e.hi) for e in a.target_view(1).effects if not e.is_discrete}
+ok = {e.name: (e.lo, e.hi) for e in ref.target_view(1).effects if not e.is_discrete}
+check(rangos == ok, f"Data sin valores: rangos de entrenamiento {rangos}")
+check(any("entrenamiento" in n for n in a.notes), "Data sin valores: se dice")
+edad = HEART[HEART.get_column("age") == 54]
+a = E.analyze(m, edad)
+e_age = [e for e in a.target_view(1).effects if e.name == "age"][0]
+check(e_age.lo < 54 < e_age.hi, f"age constante en Data: rango de entrenamiento {e_age.lo}–{e_age.hi}")
+m2 = silent(LogisticRegressionLearner(), HEART)
+m2.original_data = None
+a = E.analyze(m2, vacia)
+check(a.warnings and "valores conocidos" in " ".join(a.warnings),
+      f"Data sin valores y sin entrenamiento: aviso ({a.warnings})")
+b = Banco()
+b.enviar(m2, vacia)
+check(b.w.Warning.reference.is_shown(), "Data sin valores: el widget avisa")
+b.cerrar()
+
+# 7.3 ajuste aditivo: las categorías sin datos no tienen efecto inventado
+rng3 = np.random.RandomState(5)
+cats = tuple(f"p{i}" for i in range(40))
+n3 = 3000
+codes = np.where(rng3.rand(n3) < 0.9, 0, rng3.randint(1, 30, n3)).astype(float)
+x3 = rng3.normal(size=n3)
+y3 = ((codes % 3 == 1) + x3 + rng3.normal(scale=0.5, size=n3) > 0.5).astype(float)
+dom3 = Domain([DiscreteVariable("pais", values=cats), ContinuousVariable("x")],
+              DiscreteVariable("c", values=("0", "1")))
+T3 = Table.from_numpy(dom3, np.column_stack([codes, x3]), y3)
+m3 = silent(RandomForestLearner(n_estimators=30, random_state=0), T3)
+a = E.analyze(m3, T3, method=E.ADDITIVE_FIT, sample_size=300)
+v = a.target_view(1)
+pais = [e for e in v.effects if e.name == "pais"][0]
+presentes = set(np.unique(codes).astype(int))
+en_muestra = set(np.unique(a.sample[:, 0]).astype(int))
+check(presentes <= en_muestra, "la muestra incluye todas las categorías con datos")
+comp = v.grid_component(pais)
+sin_datos = [i for i in range(40) if i not in presentes]
+check(pais.unsupported is not None and pais.unsupported[sin_datos].all()
+      and not pais.unsupported[list(presentes)].any(),
+      "categorías sin datos marcadas")
+check(np.isnan(comp[sin_datos]).all() and np.isfinite(comp[list(presentes)]).all(),
+      "sin efecto dibujado para las categorías sin datos")
+check(abs(float(v.component(pais, [float(sin_datos[0])])[0])) < 1e-12,
+      "una categoría sin datos cuenta como la media")
+b = Banco(method_index=E.ADDITIVE_FIT, sample_size=300, show_all=True)
+b.enviar(m3, T3, Table.from_numpy(dom3, np.array([[float(sin_datos[0]), 0.0]]),
+                                   np.array([0.0])))
+texts = [it.text() for it in b.w.scene.items() if hasattr(it, "text")]
+check(any(t.startswith("sin datos") for t in texts), "el widget indica las categorías sin datos")
+check(any("(sin datos)" in t for t in texts), "el valor sin datos se marca")
+b.cerrar()
+
+# 7.4 multiclase exacto: la escala de probabilidad solo si es buena en casi todas las filas
+ZOO = Table("zoo")
+m4 = silent(NaiveBayesLearner(), ZOO)
+a = E.analyze(m4)
+for t in range(len(ZOO.domain.class_var.values)):
+    v = a.target_view(t)
+    if v.link.kind == "monotone":
+        check(v.fidelity["max_abs"] <= E.MULTI_MAX and v.fidelity["p95"] <= E.MULTI_P95,
+              f"zoo clase {t}: escala aproximada con error máx {v.fidelity['max_abs']}")
+reptil = list(ZOO.domain.class_var.values).index("reptile")
+check(a.target_view(reptil).link.kind == "score", "zoo reptile: sin escala de probabilidad")
+from orangecontrib.orange_gualbe_toolbox.widgets.ownomogrampro import fidelity_summary
+html, _ = fidelity_summary(a.target_view(reptil))
+check("Puntuación exacta" in html and "Nomograma exacto" not in html,
+      "multiclase: la cabecera dice que la puntuación es exacta, no la probabilidad")
+m5 = silent(LogisticRegressionLearner(), IRIS)
+html, _ = fidelity_summary(E.analyze(m5).target_view(0))
+check("Escala de probabilidad" in html and "aproximada" in html,
+      "multiclase con escala: la cabecera la da por aproximada")
+
+# 7.5 fidelidad de las dos aproximaciones en las mismas filas apartadas
+m6 = silent(RandomForestRegressionLearner(n_estimators=30), HOUSING)
+a = E.analyze(m6, HOUSING)
+hold = [v.holdout for v in a.variants.values()]
+check(all(h is not None and np.array_equal(h, hold[0]) for h in hold)
+      and 0 < len(hold[0]) < len(a.sample),
+      "dependencia parcial y ajuste se miden en las mismas filas apartadas")
+check(all(v.fidelity["rows"] == len(hold[0]) for v in
+          (E.TargetView(a, var, 0) for var in a.variants.values())),
+      "la fidelidad cuenta solo las filas apartadas")
+
+# 7.6 datos de referencia con muy pocas filas
+for n_filas in (1, 5):
+    m7 = silent(RandomForestLearner(n_estimators=10), HEART)
+    a = E.analyze(m7, HEART[:n_filas])
+    check(a.n_reference == len(HEART) and any("entrenamiento" in n for n in a.notes),
+          f"Data de {n_filas} filas: referencia de entrenamiento")
+    m7.original_data = None
+    a = E.analyze(m7, HEART[:n_filas])
+    check(any("no son fiables" in w for w in a.warnings),
+          f"Data de {n_filas} filas sin entrenamiento: aviso")
+
+# 7.7 tiempo con 300 atributos y un bosque de 100 árboles
+X7 = rng.normal(size=(1000, 300))
+y7 = (X7[:, 0] + np.sin(2 * X7[:, 1]) + 0.5 * X7[:, 2] * X7[:, 3] > 0).astype(float)
+T7 = Table.from_numpy(Domain([ContinuousVariable(f"a{i}") for i in range(300)],
+                             DiscreteVariable("y", values=("0", "1"))), X7, y7)
+m8 = silent(RandomForestLearner(n_estimators=100, random_state=0), T7)
+t0 = time.time()
+a = E.analyze(m8, T7)
+dt = time.time() - t0
+print(f"   300 atributos, RF de 100 árboles: {dt:.1f} s, {a.n_pd} filas de fondo")
+check(dt < 6, f"300 atributos: {dt:.1f} s")
+check(a.n_pd >= 60, f"300 atributos: filas de fondo {a.n_pd}")
 
 # ---------------------------------------------------------------------------
 print("6. Tiempos con una tabla mediana")

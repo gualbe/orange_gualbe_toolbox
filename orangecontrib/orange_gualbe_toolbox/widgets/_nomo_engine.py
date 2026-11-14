@@ -50,6 +50,12 @@ EXACT_TOL = 1e-7          # tolerancia relativa de la verificación exacta
 FINE_GRID = 101           # puntos de un efecto continuo exacto no lineal
 MAX_ROWS_PER_CALL = 100_000
 MIN_PD_ROWS = 50
+# escala de probabilidad aproximada con varias clases: error medio, percentil 95
+# y máximo admitidos en los datos de referencia
+MULTI_MAE, MULTI_P95, MULTI_MAX = 0.05, 0.10, 0.25
+MIN_REFERENCE_ROWS = 20   # filas mínimas de unos datos de referencia fiables
+PD_GRID_POINTS = 2000     # puntos de rejilla de todos los numéricos juntos
+MAX_RARE_ROWS = 0.2       # filas añadidas a la muestra por categorías raras
 MAX_FIT_COLUMNS = 1200    # columnas de la base del ajuste aditivo
 
 
@@ -94,6 +100,8 @@ class FeatureEffect:
     counts: Optional[np.ndarray] = None      # distribución de los datos
     edges: Optional[np.ndarray] = None       # bordes del histograma (numéricos)
     n_unknown: int = 0
+    typical: float = float("nan")            # mediana o valor más frecuente
+    unsupported: Optional[np.ndarray] = None  # categorías sin datos (ajuste)
 
     @property
     def name(self):
@@ -113,6 +121,11 @@ class FeatureEffect:
         if self.kind == "discrete":
             idx = np.clip(known.astype(int), 0, len(self.grid) - 1)
             res = self.raw[idx]
+            if self.unsupported is not None and self.unsupported[idx].any():
+                # sin datos en la muestra: no hay efecto estimado, se toma la media
+                res = res.copy()
+                res[self.unsupported[idx]] = self.mean if self.mean is not None \
+                    else 0
         elif self.kind == "linear":
             res = self.offset[None, :] + known[:, None] * self.slope[None, :]
         elif self.kind == "bins":
@@ -172,6 +185,7 @@ class Analysis:
     n_pd: int = 0
     seconds: float = 0.0
     notes: List[str] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
     residuals: Optional[np.ndarray] = None  # regresión: y - predicción
     residuals_on_training: bool = False
     has_nan_effect: bool = True
@@ -335,9 +349,14 @@ class TargetView:
         self.fidelity = self._fidelity()
 
     def _dot(self, raw):
+        """Puntuación a partir de las columnas raw de las clases que cuentan.
+
+        Un NaN (categoría sin datos en el ajuste aditivo) se conserva: no tiene
+        efecto estimado y no se dibuja.
+        """
         raw = np.asarray(raw, dtype=float)
         sub = raw[..., self.mask]
-        return np.nan_to_num(sub) @ self.weights[self.mask]
+        return sub @ self.weights[self.mask]
 
     @property
     def effects(self):
@@ -389,9 +408,12 @@ class TargetView:
                         exact=self.mask.sum() <= 2)
         if link.kind == "monotone" and self.mask.sum() > 2:
             # con varias clases la probabilidad depende de todas: la escala
-            # monótona solo se muestra si es buena en los datos de referencia
-            mae = float(np.mean(np.abs(link(scores) - probs)))
-            if mae > 0.05:
+            # monótona solo se muestra si es buena en casi todas las filas de
+            # referencia, no solo de media
+            err = np.abs(link(scores) - probs)
+            err = err[np.isfinite(err)]
+            if not len(err) or err.mean() > MULTI_MAE \
+                    or np.percentile(err, 95) > MULTI_P95 or err.max() > MULTI_MAX:
                 return Link("score", exact=True)
         return link
 
@@ -418,6 +440,7 @@ class TargetView:
             err = pred - real
             fid["mae"] = float(np.mean(np.abs(err)))
             fid["max_abs"] = float(np.max(np.abs(err)))
+            fid["p95"] = float(np.percentile(np.abs(err), 95))
             size = max(1.0, float(np.max(np.abs(real))))
             var = float(np.mean((real - real.mean()) ** 2))
             if var <= (1e-12 * size) ** 2:
@@ -526,6 +549,71 @@ def reference_table(model, data):
     return None, None, notes
 
 
+def training_columns(model, adom, limit=50_000):
+    """Columnas densas de los datos de entrenamiento (muestra si son muchas)."""
+    od = getattr(model, "original_data", None)
+    if od is None or not len(od):
+        return None
+    try:
+        t = od.transform(adom)
+    except Exception:  # pragma: no cover - defensive
+        return None
+    X, _ = sample_rows(t, limit, seed=2)
+    return X
+
+
+def _usable(col, var):
+    known = col[~np.isnan(col)]
+    if not len(known):
+        return False
+    return var.is_discrete or float(np.ptp(known)) > 0
+
+
+def range_columns(analysis, model, columns, source):
+    """Columna de cada atributo para rangos, rejillas y distribución.
+
+    Es la de los datos de referencia salvo si no tiene valores conocidos o, en
+    un numérico, es constante: entonces la de entrenamiento si la hay.
+    """
+    adom = analysis.domain
+    cols = [columns[:, a] for a in range(len(adom.attributes))]
+    train = None
+    used, empty, const = [], [], []
+    for a, var in enumerate(adom.attributes):
+        if _usable(cols[a], var):
+            continue
+        if source == "data":
+            if train is None:
+                train = training_columns(model, adom)
+                if train is None:
+                    train = False
+            if train is not False and _usable(train[:, a], var):
+                cols[a] = train[:, a]
+                used.append(var.name)
+                continue
+        if np.isnan(cols[a]).all():
+            empty.append(var.name)
+        else:
+            const.append(var.name)
+    if used:
+        analysis.notes.append(
+            "Sin valores conocidos o constantes en Data: "
+            + _names(used) + "; su escala usa el rango de los datos de "
+            "entrenamiento.")
+    if empty:
+        analysis.warnings.append(
+            _plural(len(empty), "El atributo ", "Los atributos ")
+            + _names(empty) + _plural(len(empty), " no tiene", " no tienen")
+            + " valores conocidos en los datos de referencia: su escala se reduce "
+            "a un punto y no muestra su efecto.")
+    if const:
+        analysis.warnings.append(
+            _plural(len(const), "El atributo ", "Los atributos ")
+            + _names(const) + _plural(len(const), " es constante", " son constantes")
+            + " en los datos de referencia: su escala se reduce a un punto.")
+    return cols
+
+
 def _plural(n, one, many):
     return one if n == 1 else many
 
@@ -537,16 +625,41 @@ def _names(names, limit=5):
     return shown
 
 
-def sample_rows(table, size, seed=0):
+def sample_rows(table, size, seed=0, rare=False):
+    """Muestra al azar de ``size`` filas (densa) y sus índices.
+
+    Con ``rare``, añade una fila por cada categoría presente en la tabla que no
+    haya salido en la muestra (hasta un 20 % más de filas), para que toda
+    categoría con datos tenga un efecto estimado.
+    """
     X = _dense(table.X)
     if X.ndim == 1:
         X = X[:, None]
     n = len(X)
-    if n > size:
-        rng = np.random.RandomState(seed)
-        idx = np.sort(rng.choice(n, size, replace=False))
-        return X[idx], idx
-    return X, np.arange(n)
+    if n <= size:
+        return X, np.arange(n)
+    rng = np.random.RandomState(seed)
+    idx = np.sort(rng.choice(n, size, replace=False))
+    if rare:
+        chosen = set(idx.tolist())
+        extra = []
+        limit = int(MAX_RARE_ROWS * size)
+        for a, var in enumerate(table.domain.attributes):
+            if not var.is_discrete or len(extra) >= limit:
+                continue
+            col = X[:, a]
+            seen = set(np.unique(col[idx][~np.isnan(col[idx])]).astype(int))
+            for v in np.unique(col[~np.isnan(col)]).astype(int):
+                if v in seen or len(extra) >= limit:
+                    continue
+                rows = np.flatnonzero(col == v)
+                pick = int(rows[rng.randint(len(rows))])
+                if pick not in chosen:
+                    chosen.add(pick)
+                    extra.append(pick)
+        if extra:
+            idx = np.sort(np.concatenate([idx, extra]))
+    return X[idx], idx
 
 
 def _make_table(adom, X):
@@ -633,6 +746,11 @@ def ensemble_spread(model, adom, values, target=None, q=(5, 95)):
 def _distribution(effect, column):
     col = column[~np.isnan(column)]
     effect.n_unknown = int(np.isnan(column).sum())
+    if len(col):
+        if effect.var.is_discrete:
+            effect.typical = float(np.bincount(col.astype(int)).argmax())
+        else:
+            effect.typical = float(np.median(col))
     if effect.kind == "discrete":
         effect.counts = np.bincount(col.astype(int),
                                     minlength=len(effect.grid))[:len(effect.grid)]
@@ -878,7 +996,7 @@ def _progress(state, value, text=None):
 
 
 def analyze(model, data=None, *, method=METHOD_AUTO,
-            sample_size=1000, grid_size=20, time_budget=8.0,
+            sample_size=1000, grid_size=20, time_budget=5.0,
             allow_exact=True, seed=0, state=None):
     """Descomposición aditiva de ``model`` (ver el docstring del módulo)."""
     t0 = time.perf_counter()
@@ -886,19 +1004,32 @@ def analyze(model, data=None, *, method=METHOD_AUTO,
     adom = attribute_domain(model)
     K = len(cv.values) if kind == "classification" else 1
     ref, source, notes = reference_table(model, data)
-    sample = None
-    n_ref = 0
-    columns = None
-    if ref is not None:
-        n_ref = len(ref)
-        sample, _ = sample_rows(ref, sample_size, seed)
-        columns = _dense(ref.X)
     analysis = Analysis(model=model, kind=kind, mode=EXACT, domain=adom,
                         class_var=cv, variants={}, method=method,
-                        model_name=model_name(model), notes=notes,
-                        n_reference=n_ref)
+                        model_name=model_name(model), notes=notes)
+    if ref is not None and len(ref) < MIN_REFERENCE_ROWS:
+        od = getattr(model, "original_data", None)
+        if source == "data" and od is not None \
+                and len(od) >= MIN_REFERENCE_ROWS:
+            analysis.notes.append(
+                f"Data solo tiene {len(ref)} {_plural(len(ref), 'fila', 'filas')} "
+                f"(hacen falta al menos {MIN_REFERENCE_ROWS}): la referencia son "
+                "los datos de entrenamiento del modelo.")
+            ref, source = od.transform(adom), "training"
+        else:
+            analysis.warnings.append(
+                f"Los datos de referencia solo tienen {len(ref)} "
+                f"{_plural(len(ref), 'fila', 'filas')}: los rangos, la distribución "
+                "y la fidelidad no son fiables (hacen falta al menos "
+                f"{MIN_REFERENCE_ROWS}).")
+    sample = None
+    rcols = None
+    if ref is not None:
+        analysis.n_reference = len(ref)
+        sample, _ = sample_rows(ref, sample_size, seed, rare=True)
+        rcols = range_columns(analysis, model, _dense(ref.X), source)
     analysis.sample = sample
-    if source == "training":
+    if source == "training" and data is None:
         analysis.notes.append(
             "Sin datos de entrada: los datos de referencia son los de "
             "entrenamiento del modelo.")
@@ -909,7 +1040,7 @@ def analyze(model, data=None, *, method=METHOD_AUTO,
     predictor = Predictor(model, adom, kind, state)
     if adapter is not None:
         try:
-            ok = _exact(analysis, adapter, discretizers, columns, sample,
+            ok = _exact(analysis, adapter, discretizers, rcols, sample,
                         predictor, state)
         except Cancelled:
             raise
@@ -929,16 +1060,27 @@ def analyze(model, data=None, *, method=METHOD_AUTO,
         analysis.mode = APPROXIMATE
         analysis.reason = reason
         analysis.variants = {}
+        test, train = holdout_split(len(sample), seed)
         if method in (METHOD_AUTO, PARTIAL_DEPENDENCE):
-            _partial_dependence(analysis, columns, sample, grid_size,
-                                predictor, time_budget, state)
+            _partial_dependence(analysis, rcols, sample, grid_size, predictor,
+                                time_budget, state, test, train)
         if method in (METHOD_AUTO, ADDITIVE_FIT):
-            _additive_fit(analysis, columns, sample, grid_size, predictor,
-                          seed, state, start=60 if method == METHOD_AUTO else 5)
+            _additive_fit(analysis, rcols, sample, grid_size, predictor,
+                          seed, state, test, train,
+                          start=60 if method == METHOD_AUTO else 5)
     if kind == "regression" and ref is not None:
         _residuals(analysis, model, ref, data, source)
     analysis.seconds = time.perf_counter() - t0
     return analysis
+
+
+def holdout_split(n, seed=0):
+    """Filas apartadas (30 %) para medir la fidelidad y filas de trabajo."""
+    perm = np.random.RandomState(seed).permutation(n)
+    n_test = int(round(0.3 * n)) if n >= 10 else 0
+    if not n_test:
+        return np.arange(n), np.arange(n)
+    return np.sort(perm[:n_test]), np.sort(perm[n_test:])
 
 
 def _residuals(analysis, model, ref, data, source):
@@ -959,7 +1101,7 @@ def _residuals(analysis, model, ref, data, source):
     analysis.residuals_on_training = source == "training"
 
 
-def _exact(analysis, adapter, discretizers, columns, sample, predictor,
+def _exact(analysis, adapter, discretizers, rcols, sample, predictor,
            state):
     """Descomposición exacta; True, o el motivo para pasar a la aproximada."""
     adom = analysis.domain
@@ -970,7 +1112,7 @@ def _exact(analysis, adapter, discretizers, columns, sample, predictor,
     # 1. rejillas de cada atributo (filas con solo ese atributo conocido)
     blocks, specs = [], []
     for a, var in enumerate(adom.attributes):
-        col = columns[:, a] if columns is not None else None
+        col = rcols[a] if rcols is not None else None
         if var.is_discrete:
             grid = np.arange(len(var.values), dtype=float)
             spec = dict(kind="discrete", grid=grid,
@@ -992,7 +1134,7 @@ def _exact(analysis, adapter, discretizers, columns, sample, predictor,
                             labels=labels, lo=lo, hi=hi)
             else:
                 if rng is None:
-                    if analysis.present is None or columns is None:
+                    if rcols is None:
                         raise NomogramError(
                             f"Sin datos de referencia no se conoce el rango "
                             f"de «{var.name}»: conecta una tabla a Data.")
@@ -1056,7 +1198,7 @@ def _exact(analysis, adapter, discretizers, columns, sample, predictor,
         analysis.real = real
         analysis.real_score = real_score
         for eff in effects:
-            _distribution(eff, columns[:, eff.index])
+            _distribution(eff, rcols[eff.index])
     else:
         # sin datos: se centra en la rejilla y se calibra con sus filas
         base_raw = adapter.const + sum(
@@ -1142,10 +1284,10 @@ def _bin_representatives(thr, col, rng):
 # Descomposiciones aproximadas
 # ---------------------------------------------------------------------------
 
-def _approx_grids(adom, columns, sample, grid_size):
+def _approx_grids(adom, rcols, grid_size):
     specs = []
     for a, var in enumerate(adom.attributes):
-        col = columns[:, a]
+        col = rcols[a]
         if var.is_discrete:
             specs.append(dict(kind="discrete",
                               grid=np.arange(len(var.values), dtype=float),
@@ -1156,7 +1298,7 @@ def _approx_grids(adom, columns, sample, grid_size):
                 specs.append(dict(kind="curve", grid=np.array([0.0]),
                                   lo=0.0, hi=0.0, empty=True))
                 continue
-            grid = continuous_grid(sample[:, a], grid_size)
+            grid = continuous_grid(col, grid_size)
             if not len(grid):
                 grid = np.array([rng[0]])
             lo, hi = min(rng[0], grid[0]), max(rng[1], grid[-1])
@@ -1184,8 +1326,8 @@ def _spaces(kind, P):
     return {"prob": P, "logit": logit(P)}
 
 
-def _finish_variants(analysis, tag, specs, raws, raw_nans, columns, sample,
-                     real, holdout=None):
+def _finish_variants(analysis, tag, specs, raws, raw_nans, rcols, sample,
+                     real, holdout=None, unsupported=None):
     """Construye las variantes a partir de los efectos raw en las rejillas."""
     for space, real_space in _spaces(analysis.kind, real).items():
         effects = []
@@ -1200,10 +1342,15 @@ def _finish_variants(analysis, tag, specs, raws, raw_nans, columns, sample,
                 else raw_nans[space][a],
                 lo=spec.get("lo", 0.0), hi=spec.get("hi", 0.0),
                 labels=spec.get("labels"))
+            if unsupported is not None and unsupported[a] is not None:
+                eff.unsupported = unsupported[a]
             sr = eff.evaluate(sample[:, a])
             _centre(eff, sr)
+            if eff.unsupported is not None:
+                eff.raw = eff.raw.copy()
+                eff.raw[eff.unsupported] = np.nan   # no se dibujan como efectos
             recon += sr - eff.mean
-            _distribution(eff, columns[:, a])
+            _distribution(eff, rcols[a])
             effects.append(eff)
         base = real_space.mean(axis=0)
         recon += base
@@ -1214,11 +1361,24 @@ def _finish_variants(analysis, tag, specs, raws, raw_nans, columns, sample,
             holdout=holdout, method=tag)
 
 
-def _partial_dependence(analysis, columns, sample, grid_size, predictor,
-                        time_budget, state):
+def _pd_grid_size(adom, grid_size):
+    """Puntos por numérico: menos cuando hay muchos, para no perder filas."""
+    n_cont = sum(1 for a in adom.attributes if not a.is_discrete)
+    if not n_cont:
+        return grid_size
+    return int(max(8, min(grid_size, PD_GRID_POINTS // n_cont)))
+
+
+def _partial_dependence(analysis, rcols, sample, grid_size, predictor,
+                        time_budget, state, test, train):
+    """Dependencia parcial con las filas de trabajo de fondo.
+
+    La fidelidad se mide en las filas apartadas (``test``), que no se usan
+    como fondo, igual que en el ajuste aditivo.
+    """
     adom = analysis.domain
     kind = analysis.kind
-    specs = _approx_grids(adom, columns, sample, grid_size)
+    specs = _approx_grids(adom, rcols, _pd_grid_size(adom, grid_size))
     _progress(state, 2, "Predicciones del modelo")
     t0 = time.perf_counter()
     real = predictor(sample)
@@ -1227,7 +1387,7 @@ def _partial_dependence(analysis, columns, sample, grid_size, predictor,
     nan_ok = _handles_nan(predictor, sample)
     analysis.has_nan_effect = nan_ok
     rows_per_sample = sum(len(s["grid"]) + nan_ok for s in specs)
-    n = len(sample)
+    n = len(train)
     budget_rows = time_budget / max(per_row, 1e-7)
     n_pd = int(min(n, max(min(MIN_PD_ROWS, n),
                           budget_rows // max(1, rows_per_sample))))
@@ -1235,33 +1395,49 @@ def _partial_dependence(analysis, columns, sample, grid_size, predictor,
     pd_note = ""
     if n_pd < n:
         pd_note = (
-            f"La dependencia parcial usa {n_pd} de las {n} filas de la "
-            "muestra para no tardar demasiado con este modelo; la fidelidad "
-            f"se mide con las {n}.")
-    base_rows = sample[:n_pd]
+            f"La dependencia parcial usa {n_pd} filas de fondo de las {n} "
+            "disponibles para no tardar demasiado con este modelo.")
+    base_rows = sample[train[:n_pd]]
     spaces = list(_spaces(kind, real[:1]).keys())
-    raws = {s: [] for s in spaces}
-    raw_nans = {s: [] for s in spaces}
+    raws = {s: [None] * len(specs) for s in spaces}
+    raw_nans = {s: [None] * len(specs) for s in spaces}
+    # se predicen varios atributos por llamada: menos sobrecoste por llamada
+    pending, pending_rows = [], 0
+
+    def flush():
+        nonlocal pending, pending_rows
+        if not pending:
+            return
+        X = np.vstack([blk for _, _, blk in pending])
+        P = predictor(X)
+        start = 0
+        for a, m, blk in pending:
+            Pa = P[start:start + len(blk)].reshape(m, n_pd, -1)
+            start += len(blk)
+            for space in spaces:
+                vals = Pa if space in ("prob", "value") else logit(Pa)
+                pdv = vals.mean(axis=1)
+                if nan_ok:
+                    raws[space][a], raw_nans[space][a] = pdv[:-1], pdv[-1]
+                else:
+                    raws[space][a] = pdv
+        pending, pending_rows = [], 0
+
     total = len(specs)
     for a, spec in enumerate(specs):
-        _progress(state, 5 + 90 * a / max(1, total),
+        _progress(state, 5 + 55 * a / max(1, total),
                   f"Dependencia parcial: {adom.attributes[a].name}")
         grid = list(spec["grid"]) + ([np.nan] if nan_ok else [])
         m = len(grid)
         X = np.tile(base_rows, (m, 1))
         X[:, a] = np.repeat(np.asarray(grid, dtype=float), n_pd)
-        P = predictor(X).reshape(m, n_pd, -1)
-        for space in spaces:
-            vals = P if space in ("prob", "value") else logit(P)
-            pdv = vals.mean(axis=1)
-            if nan_ok:
-                raws[space].append(pdv[:-1])
-                raw_nans[space].append(pdv[-1])
-            else:
-                raws[space].append(pdv)
-                raw_nans[space].append(None)
-    _finish_variants(analysis, "pd", specs, raws, raw_nans, columns, sample,
-                     real)
+        if pending_rows + len(X) > MAX_ROWS_PER_CALL:
+            flush()
+        pending.append((a, m, X))
+        pending_rows += len(X)
+    flush()
+    _finish_variants(analysis, "pd", specs, raws, raw_nans, rcols, sample,
+                     real, holdout=test)
     for (tag, _), var in analysis.variants.items():
         if tag == "pd":
             var.note = pd_note
@@ -1283,23 +1459,7 @@ def _hat_basis(grid, values):
     return B
 
 
-def _additive_fit(analysis, columns, sample, grid_size, predictor, seed,
-                  state, start=5):
-    """Sustituto aditivo por mínimos cuadrados de las predicciones del modelo."""
-    adom = analysis.domain
-    # el sistema lineal crece con el cubo de las columnas: con muchos atributos
-    # se usan menos nudos por atributo numérico
-    n_cont = sum(1 for a in adom.attributes if not a.is_discrete)
-    n_disc = sum(len(a.values) for a in adom.attributes if a.is_discrete)
-    room = max(0, MAX_FIT_COLUMNS - n_disc)
-    if n_cont:
-        grid_size = int(max(3, min(grid_size, room // n_cont)))
-    specs = _approx_grids(adom, columns, sample, grid_size)
-    _progress(state, start, "Ajuste aditivo")
-    if analysis.real is None:
-        analysis.real = predictor(sample)
-        analysis.n_pd = 0
-    real = analysis.real
+def _fit_basis(specs, sample):
     n = len(sample)
     blocks, slices = [], []
     start = 0
@@ -1320,28 +1480,74 @@ def _additive_fit(analysis, columns, sample, grid_size, predictor, seed,
         slices.append((start, start + B.shape[1], has_nan))
         start += B.shape[1]
     Bfull = np.hstack(blocks) if blocks else np.zeros((n, 0))
+    return Bfull, slices
+
+
+def _choose_lambda(B, Y, penalty, seed):
+    """La penalización más fuerte a menos de un 5 % del mejor error de validación.
+
+    La validación se hace dentro de las filas de trabajo, así que las filas
+    apartadas para la fidelidad no intervienen en el ajuste.
+    """
+    n = len(B)
+    if n < 10:
+        return 1e-2
+    perm = np.random.RandomState(1).permutation(n)
+    n_val = int(round(0.25 * n))
+    val, fit = perm[:n_val], perm[n_val:]
+    trials = []
+    for cand in (1e-3, 1e-2, 1e-1, 1.0, 10.0, 100.0, 1000.0):
+        coef, const = _ridge(B[fit], Y[fit], cand, penalty)
+        pred = B[val] @ coef + const
+        trials.append((cand, float(np.mean((pred - Y[val]) ** 2))))
+    best = min(t[1] for t in trials)
+    return [t for t in trials if t[1] <= best * 1.05 + 1e-300][-1][0]
+
+
+def _additive_fit(analysis, rcols, sample, grid_size, predictor, seed,
+                  state, test, train, start=5):
+    """Sustituto aditivo por mínimos cuadrados de las predicciones del modelo.
+
+    Se ajusta con las filas de trabajo y su fidelidad se mide en las apartadas;
+    lo que se dibuja es el ajuste con todas las filas.
+    """
+    adom = analysis.domain
+    # el sistema lineal crece con el cubo de las columnas: con muchos atributos
+    # se usan menos nudos por atributo numérico
+    n_cont = sum(1 for a in adom.attributes if not a.is_discrete)
+    n_disc = sum(len(a.values) for a in adom.attributes if a.is_discrete)
+    room = max(0, MAX_FIT_COLUMNS - n_disc)
+    if n_cont:
+        grid_size = int(max(3, min(grid_size, room // n_cont)))
+    specs = _approx_grids(adom, rcols, grid_size)
+    _progress(state, start, "Ajuste aditivo")
+    if analysis.real is None:
+        analysis.real = predictor(sample)
+        analysis.n_pd = 0
+    real = analysis.real
+    Bfull, slices = _fit_basis(specs, sample)
     penalty = _smooth_penalty(specs, slices, Bfull.shape[1])
-    rng = np.random.RandomState(seed)
-    perm = rng.permutation(n)
-    n_test = max(1, int(round(0.3 * n))) if n >= 10 else 0
-    test, train = np.sort(perm[:n_test]), np.sort(perm[n_test:])
+    separate = len(test) < len(sample)
+    # categorías sin ninguna fila en la muestra: no tienen efecto estimado
+    unsupported = []
+    for a, spec in enumerate(specs):
+        if spec["kind"] == "discrete":
+            col = sample[:, a]
+            counts = np.bincount(col[~np.isnan(col)].astype(int),
+                                 minlength=len(spec["grid"]))
+            mask = counts[:len(spec["grid"])] == 0
+            unsupported.append(mask if mask.any() else None)
+        else:
+            unsupported.append(None)
     raws, raw_nans = {}, {}
     holdout_recon = {}
     for space, target in _spaces(analysis.kind, real).items():
-        lam = 1e-2
-        if n_test:
-            # la penalización más fuerte cuyo error en las filas apartadas no supera
-            # en más de un 5 % al mejor: curvas suaves sin perder fidelidad
-            trials = []
-            for cand in (1e-3, 1e-2, 1e-1, 1.0, 10.0, 100.0, 1000.0):
-                coef_tr, mean_tr = _ridge(Bfull[train], target[train], cand,
-                                          penalty)
-                pred = Bfull[test] @ coef_tr + mean_tr
-                trials.append((cand, float(np.mean((pred - target[test]) ** 2)),
-                               pred))
-            best = min(t[1] for t in trials)
-            lam, _, holdout_recon[space] = [
-                t for t in trials if t[1] <= best * 1.05 + 1e-300][-1]
+        if separate:
+            lam = _choose_lambda(Bfull[train], target[train], penalty, seed)
+            coef_tr, mean_tr = _ridge(Bfull[train], target[train], lam, penalty)
+            holdout_recon[space] = Bfull[test] @ coef_tr + mean_tr
+        else:
+            lam = _choose_lambda(Bfull, target, penalty, seed)
         coef, mean = _ridge(Bfull, target, lam, penalty)
         raws[space], raw_nans[space] = [], []
         for (s, e, has_nan), spec in zip(slices, specs):
@@ -1352,17 +1558,13 @@ def _additive_fit(analysis, columns, sample, grid_size, predictor, seed,
             else:
                 raws[space].append(c)
                 raw_nans[space].append(None)
-    _finish_variants(analysis, "fit", specs, raws, raw_nans, columns, sample,
-                     real)
-    # fidelidad en filas que no se usaron en el ajuste
-    if n_test:
+    _finish_variants(analysis, "fit", specs, raws, raw_nans, rcols, sample,
+                     real, holdout=test, unsupported=unsupported)
+    if separate:
         for (tag, space), var in analysis.variants.items():
             if tag == "fit":
+                # la fidelidad, con el ajuste que no vio las filas apartadas
                 var.recon[test] = holdout_recon[space]
-                var.holdout = test
-                var.note = (
-                    f"La fidelidad del ajuste aditivo se mide en {n_test} "
-                    "filas que no se usaron para ajustarlo.")
 
 
 def _smooth_penalty(specs, slices, ncols):
@@ -1507,6 +1709,13 @@ def format_value(var, value):
     if isinstance(var, TimeVariable):
         return var.repr_val(value)
     return format_number(value)
+
+
+def span(values):
+    """Rango (máx − mín) de los valores finitos; 0 si no hay."""
+    v = np.asarray(values, dtype=float)
+    v = v[np.isfinite(v)]
+    return float(v.max() - v.min()) if len(v) else 0.0
 
 
 def is_monotone(values, tol_rel=0.03):

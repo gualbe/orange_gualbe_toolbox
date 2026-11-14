@@ -25,7 +25,10 @@ Entradas
 - **Data** (opcional): datos de referencia. Dan los rangos de las escalas, la distribución que
   se dibuja bajo cada escala, la importancia de cada atributo y, en el modo aproximado, las filas
   con las que se calcula y se mide la aproximación. Si no se conecta, se usan los datos con los
-  que se entrenó el modelo, que Orange guarda con él.
+  que se entrenó el modelo, que Orange guarda con él. También se usan esos datos si *Data* tiene
+  menos de 20 filas, y, para la escala de un atributo, si su columna en *Data* no tiene valores
+  conocidos o (en un numérico) es constante; el widget lo dice. Si el modelo no guarda sus datos
+  de entrenamiento, avisa de que la referencia no es fiable.
 - **Instance** (opcional): fija los valores iniciales con la **primera fila** de la tabla. Las
   columnas se emparejan por nombre; las que faltan conservan su valor.
 
@@ -35,8 +38,15 @@ Salidas
 - **Features**: los atributos que se muestran, en su orden.
 - **Instance**: la instancia que se está viendo, con la clase o el valor que predice el modelo
   real. Se puede conectar a *Predictions* o a otro modelo.
-- **Contributions**: una fila por atributo con sus puntos, su contribución (en log-odds, en
-  probabilidad o en unidades del objetivo), su rango de puntos y su importancia en los datos.
+- **Contributions**: una fila por atributo y una última fila **Base**, con:
+
+  - **Puntos**: los de cada atributo **mostrado**, como en su escala (los ocultos no están en
+    ninguna escala y no tienen puntos). La columna suma los *Puntos totales* del widget.
+  - **Contribución** (en log-odds, en probabilidad o en unidades del objetivo): lo que el valor de
+    cada atributo, mostrado u oculto, suma frente a la media; en la fila *Base*, la puntuación
+    media. **Base + contribuciones = puntuación de la instancia**, la del pie.
+  - **Rango de puntos**, **importancia en los datos** y, como metas, el atributo, su valor y si
+    se muestra.
 
 Qué es un nomograma
 -------------------
@@ -78,9 +88,11 @@ máximo (del orden de 1e-15). Si la comprobación falla, pasa al modo aproximado
 - En clasificación binaria la puntuación es el **log-odds** de la clase objetivo y el eje de
   probabilidad es exacto.
 - Con **más de dos clases**, la puntuación de la clase es su log-odds frente a la media de las
-  demás, que sí es aditiva, pero la probabilidad depende de todas las clases: el eje de
-  probabilidad es una calibración aproximada (el widget dice su error medio) o, si no es buena,
-  el pie muestra la puntuación y la probabilidad real se da debajo.
+  demás, que sí es aditiva, pero la probabilidad depende de todas las clases. La cabecera dice
+  «✔ Puntuación exacta» y el eje de probabilidad es una calibración **aproximada**, marcada como
+  tal con su error medio, su percentil 95 y su error máximo en los datos de referencia. Solo se
+  dibuja si es buena en casi todas las filas (error medio ≤ 0,05, percentil 95 ≤ 0,10 y máximo ≤
+  0,25); si no, el pie muestra la puntuación y la probabilidad real se da debajo.
 - Si el modelo no da probabilidades (SGD con pérdida *hinge*, SVM lineal), el pie muestra su
   **puntuación de decisión** y la frontera en la que cambia la clase.
 - Los atributos que el modelo **discretiza** (Naive Bayes, o un *Discretize* en su preprocesado)
@@ -94,10 +106,15 @@ dice **cuánto se parece al modelo**:
   atributo toma ese valor y los demás se dejan como están en los datos. Se lee como «qué pasa, de
   media, al cambiar este valor».
 - **Ajuste aditivo directo**: una suma de curvas suaves ajustada por mínimos cuadrados a las
-  predicciones del modelo; suele ser más fiel cuando hay atributos correlacionados. Su fidelidad
-  se mide en filas que no se usaron para ajustarlo.
+  predicciones del modelo; suele ser más fiel cuando hay atributos correlacionados. Una categoría
+  que no tiene ninguna fila en la muestra no tiene efecto estimado: no se dibuja (la fila lo indica
+  con «sin datos») y, si la instancia la toma, cuenta como la media.
 - **Automático** (por defecto) calcula los dos y se queda con el más fiel (a igualdad, la
   dependencia parcial).
+
+Las dos se comparan con las **mismas filas apartadas**: el 30 % de la muestra de referencia se
+reserva para medir la fidelidad y no se usa ni como fondo de la dependencia parcial ni para el
+ajuste. La muestra incluye al menos una fila de cada categoría que aparece en los datos.
 
 En clasificación, la suma se hace en **probabilidad** o en **log-odds**; *Escala aditiva* lo deja
 elegir y, en automático, se usa la más fiel.
@@ -105,8 +122,8 @@ elegir y, en automático, se usa la más fiel.
 Cómo leer la fidelidad
 ^^^^^^^^^^^^^^^^^^^^^^
 
-El recuadro *Modelo* compara, en las filas de referencia, la predicción de la suma de puntos con
-la del modelo real:
+El recuadro *Modelo* compara, en las filas apartadas de la muestra de referencia, la predicción de
+la suma de puntos con la del modelo real:
 
 - **R²**: la parte de la variación de las predicciones del modelo que explica la suma de puntos.
   1 es perfecto.
@@ -190,8 +207,10 @@ Opciones
 - **Ordenar por**: orden original, nombre, **rango de puntos** (como el *Nomogram* de Orange),
   **importancia en los datos** (cuánto varía la contribución del atributo en los datos de
   referencia) o **contribución a la instancia** actual.
-- **Mostrar los N más importantes** o todos. Los que no se muestran se suman en la fila **Otros
-  atributos**, con su contribución a los valores actuales, así que el total no cambia.
+- **Mostrar los N más importantes** o todos. Los que no se muestran se resumen en la fila **Otros
+  atributos** con su contribución a los valores actuales: no suman puntos (los *Puntos totales*
+  son los de los atributos mostrados), sino que desplazan el eje de la predicción, así que la
+  predicción no cambia al mostrar más o menos atributos.
 - **Aproximación**: método, escala aditiva, filas de referencia (por defecto, una muestra de
   1.000) y puntos por atributo numérico (por defecto, 20).
 
@@ -208,7 +227,7 @@ colored* y *max HR* son los atributos con escalas más largas; arrastra *chest p
 
 **Regresión.** *File* (housing) → *Random Forest* → **Model**, y el mismo *File* → **Data** y, con
 *Data Table*, una fila seleccionada → **Instance**. El nomograma es aproximado: el recuadro *Modelo*
-dice su fidelidad (en la captura, R² = 0,85: media) y el pie compara la suma de puntos con la
+dice su fidelidad (media en la captura) y el pie compara la suma de puntos con la
 predicción real y muestra la dispersión entre los árboles.
 
 .. image:: ../../assets/captura_nomogrampro_regresion.png
@@ -220,7 +239,9 @@ Rendimiento
 
 El cálculo se hace en segundo plano y se puede interrumpir. El modo exacto tarda centésimas de
 segundo. El aproximado usa una muestra de las filas de referencia y una rejilla por atributo, y
-ajusta el número de filas al tiempo que tarda el modelo en predecir (se avisa si las reduce): con
-una tabla de 5.000 filas y 20 atributos, una red neuronal tarda menos de medio segundo y un *Random
-Forest* de 100 árboles, unos 2 segundos; con 300 atributos, unos segundos. Cambiar la clase objetivo, la escala, el orden o los
-valores no recalcula nada.
+ajusta el número de filas de fondo al tiempo que tarda el modelo en predecir (se avisa si las
+reduce). Con muchos atributos usa menos puntos por atributo numérico (al menos 8) y predice varios
+atributos en cada llamada al modelo. Medido en un portátil: con 5.000 filas y 20 atributos, una red
+neuronal tarda menos de medio segundo y un *Random Forest* de 100 árboles, alrededor de 1 segundo;
+con 1.000 filas y 300 atributos, ese *Random Forest* tarda unos 2 segundos. Cambiar la clase
+objetivo, la escala, el orden o los valores no recalcula nada.

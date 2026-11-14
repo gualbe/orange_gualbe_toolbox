@@ -3,6 +3,28 @@
 Cada versión se publica a la vez en GitHub (release `vX.Y.Z`) y en
 [PyPI](https://pypi.org/project/orange-gualbe-toolbox/).
 
+## 0.7.1 (2026-11-14)
+
+- **Nomogram Pro**: correcciones.
+  - Corregido: la salida *Contributions* no cuadraba con los *Puntos totales* cuando había
+    atributos ocultos. Ahora solo los atributos mostrados tienen puntos, y la columna suma lo
+    mismo que el widget. Además, una fila *Base* hace que base + contribuciones den la puntuación
+    de la instancia. La columna *Mostrado* dice qué atributos se ven.
+  - Corregido: unos datos de referencia sin valores conocidos, o con una columna constante,
+    dejaban escalas de un solo punto sin aviso. Ahora se usa el rango de los datos de
+    entrenamiento y se dice; si el modelo no los guarda, el widget avisa. Con menos de 20 filas
+    en *Data* se usan los de entrenamiento (o se avisa de que la referencia no es fiable).
+  - Corregido: en el ajuste aditivo, las categorías sin filas en la muestra recibían un efecto
+    inventado. Ahora la muestra incluye todas las categorías que aparecen en los datos, y las que
+    no tienen datos no se dibujan («sin datos») y cuentan como la media.
+  - Con más de dos clases, la cabecera dice que la puntuación es exacta y que el eje de
+    probabilidad es aproximado, con su error medio, su percentil 95 y su error máximo. El eje solo
+    se dibuja si es bueno en casi todas las filas.
+  - La fidelidad de la dependencia parcial y la del ajuste aditivo se miden en las mismas filas
+    apartadas, que no intervienen en ninguno de los dos cálculos.
+  - Más rápido con muchos atributos: con 300 atributos y un *Random Forest* de 100 árboles, unos
+    2 segundos en lugar de 6, y con más filas de fondo.
+
 ## 0.7.0 (2026-11-14)
 
 - Nuevo widget **Nomogram Pro**: nomograma de cualquier modelo de clasificación o de regresión del
