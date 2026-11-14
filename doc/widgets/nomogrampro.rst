@@ -114,7 +114,14 @@ dice **cuánto se parece al modelo**:
 
 Las dos se comparan con las **mismas filas apartadas**: el 30 % de la muestra de referencia se
 reserva para medir la fidelidad y no se usa ni como fondo de la dependencia parcial ni para el
-ajuste. La muestra incluye al menos una fila de cada categoría que aparece en los datos.
+ajuste.
+
+La muestra es **al azar** con una semilla fija y **no depende del orden de las filas**: la misma
+tabla ordenada de otra forma (por ejemplo, por la clase) da el mismo nomograma. El fondo de la
+dependencia parcial es, a su vez, una submuestra al azar de las filas de trabajo. Para que el
+ajuste aditivo pueda estimar el efecto de las categorías que no salen en la muestra, añade una
+fila de cada una, con el peso que les corresponde en los datos; esas filas no cuentan en la base,
+la importancia ni la fidelidad, así que la muestra mantiene las proporciones de los datos.
 
 En clasificación, la suma se hace en **probabilidad** o en **log-odds**; *Escala aditiva* lo deja
 elegir y, en automático, se usa la más fiel.
@@ -238,10 +245,15 @@ Rendimiento
 -----------
 
 El cálculo se hace en segundo plano y se puede interrumpir. El modo exacto tarda centésimas de
-segundo. El aproximado usa una muestra de las filas de referencia y una rejilla por atributo, y
-ajusta el número de filas de fondo al tiempo que tarda el modelo en predecir (se avisa si las
-reduce). Con muchos atributos usa menos puntos por atributo numérico (al menos 8) y predice varios
-atributos en cada llamada al modelo. Medido en un portátil: con 5.000 filas y 20 atributos, una red
-neuronal tarda menos de medio segundo y un *Random Forest* de 100 árboles, alrededor de 1 segundo;
-con 1.000 filas y 300 atributos, ese *Random Forest* tarda unos 2 segundos. Cambiar la clase
-objetivo, la escala, el orden o los valores no recalcula nada.
+segundo. El aproximado usa una muestra de las filas de referencia y una rejilla por atributo. El
+número de filas de fondo de la dependencia parcial es **fijo** para unos datos dados (unas 100.000
+predicciones, algo más con muchos atributos), así que el mismo modelo con los mismos datos da el
+mismo nomograma en cualquier ordenador. Solo si el modelo es tan lento que pasaría de unos 40
+segundos usa menos filas, y lo avisa. Con muchos atributos usa menos puntos por atributo numérico
+(al menos 8) y predice varios atributos en cada llamada al modelo.
+
+Medido en un portátil: con 5.000 filas y 20 atributos, una red neuronal o un *Random Forest* de 100
+árboles tardan menos de medio segundo; con 1.000 filas y 300 atributos, ese *Random Forest* tarda
+unos 3 segundos. Con 6.000 filas de *adult*, un *Random Forest* de 500 árboles tarda unos 3,5
+segundos, kNN entre medio segundo y 2, y una SVM con núcleo RBF, la más lenta, unos 17. Cambiar la
+clase objetivo, la escala, el orden o los valores no recalcula nada.

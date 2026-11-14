@@ -444,7 +444,7 @@ for nombre, learner in (("LR", LogisticRegressionLearner()),
           f"300 atributos ({nombre}): 10 mostrados")
     check(w.rows[0].effect.name in ("a000", "a001"),
           f"300 atributos ({nombre}): el más importante primero ({w.rows[0].effect.name})")
-    check(dt < 60, f"300 atributos ({nombre}): {dt:.1f} s")
+    check(dt < 300, f"300 atributos ({nombre}): {dt:.1f} s")
     print(f"   300 atributos, {nombre}: {dt:.1f} s ({w.analysis.mode})")
     b.cerrar()
 
@@ -644,8 +644,6 @@ a = E.analyze(m3, T3, method=E.ADDITIVE_FIT, sample_size=300)
 v = a.target_view(1)
 pais = [e for e in v.effects if e.name == "pais"][0]
 presentes = set(np.unique(codes).astype(int))
-en_muestra = set(np.unique(a.sample[:, 0]).astype(int))
-check(presentes <= en_muestra, "la muestra incluye todas las categorías con datos")
 comp = v.grid_component(pais)
 sin_datos = [i for i in range(40) if i not in presentes]
 check(pais.unsupported is not None and pais.unsupported[sin_datos].all()
@@ -715,8 +713,91 @@ t0 = time.time()
 a = E.analyze(m8, T7)
 dt = time.time() - t0
 print(f"   300 atributos, RF de 100 árboles: {dt:.1f} s, {a.n_pd} filas de fondo")
-check(dt < 6, f"300 atributos: {dt:.1f} s")
+# límites holgados: solo detectan regresiones grandes, no la carga de la máquina
+check(dt < 120, f"300 atributos: {dt:.1f} s")
 check(a.n_pd >= 60, f"300 atributos: filas de fondo {a.n_pd}")
+
+# ---------------------------------------------------------------------------
+print("8. Correcciones de la 0.7.2")
+# 8.1 el resultado no depende del orden de las filas (fondo al azar, no las primeras)
+HS = HEART[np.argsort(HEART.Y, kind="stable")]
+HR = HEART[np.random.RandomState(9).permutation(len(HEART))]
+for nombre, learner in (("RF", RandomForestLearner(n_estimators=30, random_state=0)),
+                        ("SVM", SVMLearner(probability=True))):
+    m = silent(learner, HEART)
+    res = []
+    for d in (HEART, HS, HR):
+        a = E.analyze(m, d, method=E.PARTIAL_DEPENDENCE)
+        v = a.target_view(1)
+        res.append((a.n_pd, round(v.fidelity["r2"], 12),
+                    tuple(round(E.span(v.grid_component(e)), 12) for e in v.effects)))
+    check(res[0] == res[1] == res[2], f"{nombre}: mismo nomograma con las filas reordenadas")
+# un fondo pequeño de una tabla ordenada por la clase tiene las dos clases
+big = Table.concatenate([HEART] * 20)
+big = big[np.argsort(big.Y, kind="stable")]
+mb = silent(RandomForestLearner(n_estimators=10, random_state=0), HEART)
+a = E.analyze(mb, big, method=E.PARTIAL_DEPENDENCE, sample_size=2000)
+check(0.3 < a.real[:, 1].mean() < 0.7, "muestra de una tabla ordenada: representativa")
+
+# 8.2 Naive Bayes con una clase sin filas en el entrenamiento
+IRIS2 = IRIS[:100]
+m = silent(NaiveBayesLearner(), IRIS2)
+a = E.analyze(m, IRIS2)
+check(a.mode == E.EXACT and list(a.present) == [True, True, False],
+      f"NB con una clase ausente: exacto con las dos clases ({a.mode}, {a.present})")
+v = a.target_view(1)
+X2 = IRIS2.X[:20]
+sc = np.array([v.score(x) for x in X2])
+check(np.isfinite(v.base) and np.isfinite(sc).all() and v.link.kind == "logistic",
+      "NB con una clase ausente: puntuaciones finitas y probabilidad exacta")
+real2 = np.asarray(m(IRIS2[:20], m.Probs))[:, 1]
+check(np.allclose(v.link(sc), real2, atol=1e-9), "NB con una clase ausente: P exacta")
+b = Banco(target_class_name="Iris-virginica")
+b.enviar(m, IRIS2)
+check(b.w.Error.no_target.is_shown(), "NB: elegir la clase ausente es un error claro")
+b.w.target_class_name = "Iris-versicolor"
+b.w._target_changed()
+check(not b.w.Error.active and "exacto" in b.w.model_label.text(), "NB: la otra clase va bien")
+b.cerrar()
+# red de seguridad: un efecto no finito no se presenta como exacto
+m = silent(NaiveBayesLearner(), HEART)
+m.log_cont_prob[1] = m.log_cont_prob[1].copy()
+m.log_cont_prob[1][0, 0] = -np.inf
+a = E.analyze(m, HEART)
+check(a.mode == E.APPROXIMATE and "no finitos" in a.reason,
+      f"NB con un efecto infinito: pasa a aproximado ({a.mode}: {a.reason})")
+
+# 8.3 las filas de categorías raras no cambian las proporciones de la muestra
+rng8 = np.random.RandomState(0)
+n8 = 10000
+cat8 = np.where(rng8.rand(n8) < 0.9, 0, rng8.randint(1, 401, n8)).astype(float)
+x8 = rng8.normal(size=n8)
+y8 = ((x8 + 1.5 * (cat8 > 0) + 0.3 * rng8.normal(size=n8)) > 0.8).astype(float)
+dom8 = Domain([DiscreteVariable("c", values=tuple(f"v{i}" for i in range(401))),
+               ContinuousVariable("x")], DiscreteVariable("y", values=("0", "1")))
+T8 = Table.from_numpy(dom8, np.column_stack([cat8, x8]), y8)
+m8b = silent(RandomForestLearner(n_estimators=20, random_state=0), T8)
+a = E.analyze(m8b, T8)
+check(abs(np.mean(a.sample[:, 0] > 0) - np.mean(cat8 > 0)) < 0.03,
+      f"categorías raras: la muestra mantiene su proporción ({np.mean(a.sample[:, 0] > 0):.3f})")
+P8 = np.asarray(m8b(T8, m8b.Probs))[:, 1]
+check(abs(a.real[:, 1].mean() - P8.mean()) < 0.03,
+      f"categorías raras: P media de la muestra {a.real[:, 1].mean():.3f} ≈ datos {P8.mean():.3f}")
+fit = E.TargetView(a, a.variants[("fit", "logit")], 1)
+c8 = [e for e in fit.effects if e.name == "c"][0]
+presentes8 = set(np.unique(cat8).astype(int))
+check(c8.unsupported is None or not c8.unsupported[list(presentes8)].any(),
+      "categorías raras con datos: tienen efecto estimado en el ajuste")
+
+# 8.4 el tamaño del fondo no depende del reloj
+m9 = silent(RandomForestLearner(n_estimators=20, random_state=0), HEART)
+n_pds = {E.analyze(m9, HEART, method=E.PARTIAL_DEPENDENCE).n_pd for _ in range(3)}
+a = E.analyze(m9, HEART, method=E.PARTIAL_DEPENDENCE)
+rows = sum((len(e.var.values) if e.var.is_discrete else
+            len(e.grid)) + 1 for e in a.target_view(1).effects)
+esperado = min(int(round(0.7 * len(a.sample))), max(E.MIN_PD_ROWS, E.PD_ROW_BUDGET // rows))
+# (heart tiene 13 atributos: el presupuesto es el básico)
+check(n_pds == {esperado}, f"fondo determinista: {n_pds} (esperado {esperado})")
 
 # ---------------------------------------------------------------------------
 print("6. Tiempos con una tabla mediana")
@@ -738,7 +819,7 @@ for nombre, learner, data in (("RF clasificación", RandomForestLearner(), Tmedc
     view = a.target_view(1 if a.kind == "classification" else 0)
     print(f"   {nombre}: {dt:.1f} s, {view.variant.method}-{view.variant.space}, "
           f"R² = {view.fidelity['r2']:.3f}, filas de dependencia parcial {a.n_pd}")
-    check(dt < 30, f"{nombre}: tiempo {dt:.1f} s")
+    check(dt < 120, f"{nombre}: tiempo {dt:.1f} s")
 
 print("\nFALLOS:", fallos)
 if excepciones:

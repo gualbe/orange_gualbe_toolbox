@@ -55,7 +55,13 @@ MIN_PD_ROWS = 50
 MULTI_MAE, MULTI_P95, MULTI_MAX = 0.05, 0.10, 0.25
 MIN_REFERENCE_ROWS = 20   # filas mínimas de unos datos de referencia fiables
 PD_GRID_POINTS = 2000     # puntos de rejilla de todos los numéricos juntos
-MAX_RARE_ROWS = 0.2       # filas añadidas a la muestra por categorías raras
+# filas que predice la dependencia parcial (fondo × puntos de rejilla): fijo, para
+# que el mismo modelo con los mismos datos dé el mismo nomograma en cualquier
+# máquina; el tiempo solo es un tope de seguridad
+PD_ROW_BUDGET = 100_000
+PD_TIME_CAP = 40.0
+PILOT_ROWS = 5000
+MAX_RARE_ROWS = 2000      # filas aparte para las categorías raras (ajuste aditivo)
 MAX_FIT_COLUMNS = 1200    # columnas de la base del ajuste aditivo
 
 
@@ -625,41 +631,72 @@ def _names(names, limit=5):
     return shown
 
 
-def sample_rows(table, size, seed=0, rare=False):
-    """Muestra al azar de ``size`` filas (densa) y sus índices.
+def canonical_order(X):
+    """Orden de las filas que depende solo de su contenido, no de su posición.
 
-    Con ``rare``, añade una fila por cada categoría presente en la tabla que no
-    haya salido en la muestra (hasta un 20 % más de filas), para que toda
-    categoría con datos tenga un efecto estimado.
+    Así la muestra, las filas apartadas y el fondo de la dependencia parcial son
+    los mismos aunque la tabla llegue reordenada (por ejemplo, por la clase).
+    """
+    if not len(X):
+        return np.arange(0)
+    r = np.random.RandomState(12345).normal(size=X.shape[1])
+    key = np.nan_to_num(X, nan=-0.123456789, posinf=1e300, neginf=-1e300) @ r
+    return np.argsort(key, kind="stable")
+
+
+def sample_rows(table, size, seed=0, rare=False):
+    """Muestra al azar de hasta ``size`` filas (densa) y sus índices.
+
+    La muestra no depende del orden de las filas (ver ``canonical_order``). Es
+    representativa de los datos: las filas que se añaden para las categorías
+    raras van aparte (``rare_rows``); ``rare`` se acepta por compatibilidad.
     """
     X = _dense(table.X)
     if X.ndim == 1:
         X = X[:, None]
     n = len(X)
-    if n <= size:
-        return X, np.arange(n)
-    rng = np.random.RandomState(seed)
-    idx = np.sort(rng.choice(n, size, replace=False))
-    if rare:
-        chosen = set(idx.tolist())
-        extra = []
-        limit = int(MAX_RARE_ROWS * size)
-        for a, var in enumerate(table.domain.attributes):
-            if not var.is_discrete or len(extra) >= limit:
+    order = canonical_order(X)
+    if n > size:
+        pos = np.sort(np.random.RandomState(seed).choice(n, size, replace=False))
+        order = order[pos]
+    return X[order], order
+
+
+def rare_rows(X, idx, attributes, limit, seed=0):
+    """Una fila por cada categoría con datos que no salió en la muestra.
+
+    Devuelve los índices de esas filas y su peso: la frecuencia de su categoría en
+    los datos por el tamaño de la muestra, para que el ajuste aditivo pueda
+    estimar su efecto sin cambiar las proporciones de los datos. No entran en el
+    fondo, la base, la importancia ni la fidelidad.
+    """
+    n, size = len(X), len(idx)
+    if n <= size or limit <= 0:
+        return np.zeros(0, int), np.zeros(0)
+    rng = np.random.RandomState(seed + 3)
+    order = canonical_order(X)
+    rank = np.empty(n, int)
+    rank[order] = np.arange(n)
+    chosen = set(np.asarray(idx).tolist())
+    extra, weights = [], []
+    for a, var in enumerate(attributes):
+        if not var.is_discrete or len(extra) >= limit:
+            continue
+        col = X[:, a]
+        known = ~np.isnan(col)
+        seen = set(np.unique(col[idx][known[idx]]).astype(int))
+        values, counts = np.unique(col[known].astype(int), return_counts=True)
+        for v, c in zip(values, counts):
+            if v in seen or len(extra) >= limit:
                 continue
-            col = X[:, a]
-            seen = set(np.unique(col[idx][~np.isnan(col[idx])]).astype(int))
-            for v in np.unique(col[~np.isnan(col)]).astype(int):
-                if v in seen or len(extra) >= limit:
-                    continue
-                rows = np.flatnonzero(col == v)
-                pick = int(rows[rng.randint(len(rows))])
-                if pick not in chosen:
-                    chosen.add(pick)
-                    extra.append(pick)
-        if extra:
-            idx = np.sort(np.concatenate([idx, extra]))
-    return X[idx], idx
+            rows = np.flatnonzero(col == v)
+            rows = rows[np.argsort(rank[rows])]       # independiente del orden
+            pick = int(rows[rng.randint(len(rows))])
+            if pick not in chosen:
+                chosen.add(pick)
+                extra.append(pick)
+                weights.append(size * c / n)
+    return np.asarray(extra, int), np.asarray(weights, float)
 
 
 def _make_table(adom, X):
@@ -933,6 +970,10 @@ class NaiveBayesAdapter(_ExactAdapter):
         self.lcp = model.log_cont_prob
         self.cols = {o: j for j, o in enumerate(origins) if o is not None}
 
+    def present(self):
+        """Clases con probabilidad a priori: las demás no existen para el modelo."""
+        return np.asarray(self.model.class_prob, dtype=float) > 0
+
     def raw_of(self, a, Xt):
         j = self.cols.get(a)
         if j is None or self.lcp is None:
@@ -996,7 +1037,7 @@ def _progress(state, value, text=None):
 
 
 def analyze(model, data=None, *, method=METHOD_AUTO,
-            sample_size=1000, grid_size=20, time_budget=5.0,
+            sample_size=1000, grid_size=20, time_budget=PD_TIME_CAP,
             allow_exact=True, seed=0, state=None):
     """Descomposición aditiva de ``model`` (ver el docstring del módulo)."""
     t0 = time.perf_counter()
@@ -1024,10 +1065,14 @@ def analyze(model, data=None, *, method=METHOD_AUTO,
                 f"{MIN_REFERENCE_ROWS}).")
     sample = None
     rcols = None
+    extra = (np.zeros((0, len(adom.attributes))), np.zeros(0))
     if ref is not None:
         analysis.n_reference = len(ref)
-        sample, _ = sample_rows(ref, sample_size, seed, rare=True)
-        rcols = range_columns(analysis, model, _dense(ref.X), source)
+        Xref = _dense(ref.X)
+        sample, sidx = sample_rows(ref, sample_size, seed)
+        eidx, ew = rare_rows(Xref, sidx, adom.attributes, MAX_RARE_ROWS, seed)
+        extra = (Xref[eidx], ew)
+        rcols = range_columns(analysis, model, Xref, source)
     analysis.sample = sample
     if source == "training" and data is None:
         analysis.notes.append(
@@ -1063,10 +1108,10 @@ def analyze(model, data=None, *, method=METHOD_AUTO,
         test, train = holdout_split(len(sample), seed)
         if method in (METHOD_AUTO, PARTIAL_DEPENDENCE):
             _partial_dependence(analysis, rcols, sample, grid_size, predictor,
-                                time_budget, state, test, train)
+                                time_budget, state, test, train, seed)
         if method in (METHOD_AUTO, ADDITIVE_FIT):
             _additive_fit(analysis, rcols, sample, grid_size, predictor,
-                          seed, state, test, train,
+                          seed, state, test, train, extra,
                           start=60 if method == METHOD_AUTO else 5)
     if kind == "regression" and ref is not None:
         _residuals(analysis, model, ref, data, source)
@@ -1229,6 +1274,16 @@ def _exact(analysis, adapter, discretizers, rcols, sample, predictor,
             "Sin datos de referencia: los efectos se centran en la media de "
             "sus valores posibles y no se puede calcular la importancia en "
             "los datos.")
+    # red de seguridad: en las clases que existen, todo tiene que ser finito
+    pres = analysis.present if analysis.present is not None \
+        else np.ones(np.asarray(base_raw).shape[-1], bool)
+    finite = np.isfinite(np.asarray(base_raw, float)[pres]).all() and all(
+        np.isfinite(e.raw[:, pres]).all()
+        and (e.raw_nan is None or np.isfinite(e.raw_nan[pres]).all())
+        for e in effects)
+    if not finite:
+        return ("La descomposición exacta da valores no finitos (por ejemplo, una "
+                "clase sin probabilidad).")
     variant = Variant(space=adapter.space, derive=adapter.derive,
                       effects=effects, base_raw=np.asarray(base_raw, float),
                       recon=recon, max_error=max_err)
@@ -1370,7 +1425,7 @@ def _pd_grid_size(adom, grid_size):
 
 
 def _partial_dependence(analysis, rcols, sample, grid_size, predictor,
-                        time_budget, state, test, train):
+                        time_budget, state, test, train, seed=0):
     """Dependencia parcial con las filas de trabajo de fondo.
 
     La fidelidad se mide en las filas apartadas (``test``), que no se usan
@@ -1380,24 +1435,44 @@ def _partial_dependence(analysis, rcols, sample, grid_size, predictor,
     kind = analysis.kind
     specs = _approx_grids(adom, rcols, _pd_grid_size(adom, grid_size))
     _progress(state, 2, "Predicciones del modelo")
-    t0 = time.perf_counter()
     real = predictor(sample)
-    per_row = (time.perf_counter() - t0) / max(1, len(sample))
     analysis.real = real
+    # coste por fila medido con un lote ya en caliente (la primera llamada a un
+    # modelo puede tardar mucho más: hilos, índices…); solo sirve de tope
+    # (un lote grande, como los de la dependencia parcial, para que el coste fijo
+    # de cada llamada no infle la estimación)
+    reps = int(np.ceil(PILOT_ROWS / max(1, len(sample))))
+    pilot = np.tile(sample, (reps, 1))[:PILOT_ROWS]
+    t0 = time.perf_counter()
+    predictor(pilot)
+    per_row = (time.perf_counter() - t0) / max(1, len(pilot))
     nan_ok = _handles_nan(predictor, sample)
     analysis.has_nan_effect = nan_ok
     rows_per_sample = sum(len(s["grid"]) + nan_ok for s in specs)
     n = len(train)
-    budget_rows = time_budget / max(per_row, 1e-7)
-    n_pd = int(min(n, max(min(MIN_PD_ROWS, n),
-                          budget_rows // max(1, rows_per_sample))))
-    analysis.n_pd = n_pd
+    floor = min(MIN_PD_ROWS, n)
+    # tamaño del fondo determinista: filas × puntos de rejilla fijos, algo mayor
+    # con muchos atributos (hasta el triple a partir de 60)
+    budget = int(PD_ROW_BUDGET * min(3.0, max(1.0, len(specs) / 20)))
+    n_pd = int(min(n, max(floor, budget // max(1, rows_per_sample))))
     pd_note = ""
+    # tope de seguridad: un modelo muy lento usa menos filas, y se avisa
+    estimate = per_row * n_pd * rows_per_sample
+    if estimate > time_budget and n_pd > floor:
+        n_pd = int(max(floor, time_budget / max(per_row, 1e-9)
+                       // max(1, rows_per_sample)))
+        analysis.warnings.append(
+            f"Este modelo es lento al predecir: para no pasar de unos "
+            f"{time_budget:.0f} s, la dependencia parcial usa {n_pd} filas de "
+            f"fondo en lugar de {int(min(n, budget // max(1, rows_per_sample)))}, "
+            "así que el resultado puede variar un poco de una máquina a otra.")
+    analysis.n_pd = n_pd
     if n_pd < n:
-        pd_note = (
-            f"La dependencia parcial usa {n_pd} filas de fondo de las {n} "
-            "disponibles para no tardar demasiado con este modelo.")
-    base_rows = sample[train[:n_pd]]
+        pd_note = (f"La dependencia parcial usa {n_pd} filas de fondo, elegidas "
+                   f"al azar entre las {n} de trabajo.")
+    # fondo: submuestra aleatoria con semilla fija (nunca las primeras filas)
+    pick = np.sort(np.random.RandomState(seed + 11).choice(n, n_pd, replace=False))
+    base_rows = sample[train[pick]]
     spaces = list(_spaces(kind, real[:1]).keys())
     raws = {s: [None] * len(specs) for s in spaces}
     raw_nans = {s: [None] * len(specs) for s in spaces}
@@ -1505,7 +1580,7 @@ def _choose_lambda(B, Y, penalty, seed):
 
 
 def _additive_fit(analysis, rcols, sample, grid_size, predictor, seed,
-                  state, test, train, start=5):
+                  state, test, train, extra=None, start=5):
     """Sustituto aditivo por mínimos cuadrados de las predicciones del modelo.
 
     Se ajusta con las filas de trabajo y su fidelidad se mide en las apartadas;
@@ -1525,14 +1600,28 @@ def _additive_fit(analysis, rcols, sample, grid_size, predictor, seed,
         analysis.real = predictor(sample)
         analysis.n_pd = 0
     real = analysis.real
-    Bfull, slices = _fit_basis(specs, sample)
+    # filas de categorías raras: solo para estimar su efecto, con el peso que les
+    # toca en los datos; no cuentan en la base, la importancia ni la fidelidad
+    Xe, we = extra if extra is not None else (np.zeros((0, sample.shape[1])),
+                                              np.zeros(0))
+    Pe = predictor(Xe) if len(Xe) else np.zeros((0, real.shape[1]))
+    Bmain, slices = _fit_basis(specs, sample)
+    Bext, _ = _fit_basis(specs, Xe) if len(Xe) else (
+        np.zeros((0, Bmain.shape[1])), None)
+    if Bext.shape[1] != Bmain.shape[1]:
+        # una columna de desconocidos solo en uno de los dos bloques
+        Bmain, slices = _fit_basis(specs, np.vstack([sample, Xe]))
+        Bext = Bmain[len(sample):]
+        Bmain = Bmain[:len(sample)]
+    Bfull = Bmain
     penalty = _smooth_penalty(specs, slices, Bfull.shape[1])
     separate = len(test) < len(sample)
-    # categorías sin ninguna fila en la muestra: no tienen efecto estimado
+    both = np.vstack([sample, Xe])
+    # categorías sin ninguna fila: no tienen efecto estimado
     unsupported = []
     for a, spec in enumerate(specs):
         if spec["kind"] == "discrete":
-            col = sample[:, a]
+            col = both[:, a]
             counts = np.bincount(col[~np.isnan(col)].astype(int),
                                  minlength=len(spec["grid"]))
             mask = counts[:len(spec["grid"])] == 0
@@ -1541,14 +1630,18 @@ def _additive_fit(analysis, rcols, sample, grid_size, predictor, seed,
             unsupported.append(None)
     raws, raw_nans = {}, {}
     holdout_recon = {}
+    spaces_e = _spaces(analysis.kind, Pe) if len(Pe) else None
     for space, target in _spaces(analysis.kind, real).items():
+        te = spaces_e[space] if spaces_e is not None else np.zeros((0, target.shape[1]))
+        rows = train if separate else np.arange(len(sample))
+        lam = _choose_lambda(Bfull[rows], target[rows], penalty, seed)
         if separate:
-            lam = _choose_lambda(Bfull[train], target[train], penalty, seed)
-            coef_tr, mean_tr = _ridge(Bfull[train], target[train], lam, penalty)
+            coef_tr, mean_tr = _ridge(
+                np.vstack([Bfull[train], Bext]), np.vstack([target[train], te]),
+                lam, penalty, np.concatenate([np.ones(len(train)), we]))
             holdout_recon[space] = Bfull[test] @ coef_tr + mean_tr
-        else:
-            lam = _choose_lambda(Bfull, target, penalty, seed)
-        coef, mean = _ridge(Bfull, target, lam, penalty)
+        coef, mean = _ridge(np.vstack([Bfull, Bext]), np.vstack([target, te]),
+                            lam, penalty, np.concatenate([np.ones(len(sample)), we]))
         raws[space], raw_nans[space] = [], []
         for (s, e, has_nan), spec in zip(slices, specs):
             c = coef[s:e]
@@ -1587,19 +1680,22 @@ def _smooth_penalty(specs, slices, ncols):
     return P
 
 
-def _ridge(B, Y, lam=1e-2, penalty=None):
-    """Mínimos cuadrados penalizados; devuelve coeficientes y constante."""
-    mean = Y.mean(axis=0)
+def _ridge(B, Y, lam=1e-2, penalty=None, weights=None):
+    """Mínimos cuadrados penalizados (y ponderados); coeficientes y constante."""
+    w = np.ones(len(B)) if weights is None else np.asarray(weights, float)
+    sw = w.sum() or 1.0
+    mean = (w[:, None] * Y).sum(axis=0) / sw
     if B.shape[1] == 0:
         return np.zeros((0, Y.shape[1])), mean
-    Bc = B - B.mean(axis=0)
-    G = Bc.T @ Bc
+    bmean = (w[:, None] * B).sum(axis=0) / sw
+    Bc = B - bmean
+    G = Bc.T @ (w[:, None] * Bc)
     P = np.eye(G.shape[0]) if penalty is None else penalty
     reg = lam * (np.trace(G) / max(1, G.shape[0]) + 1e-12)
     coef = np.linalg.solve(G + reg * P + 1e-10 * reg * np.eye(G.shape[0]),
-                           Bc.T @ (Y - mean))
+                           Bc.T @ (w[:, None] * (Y - mean)))
     # constante para que las predicciones sean B @ coef + const
-    const = mean - B.mean(axis=0) @ coef
+    const = mean - bmean @ coef
     return coef, const
 
 

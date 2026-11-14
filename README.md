@@ -162,7 +162,8 @@ Parte del **Nomogram** de Orange, que solo admite regresión logística y Naive 
 - Entradas **Data** (referencia) e **Instance** (valores iniciales); salidas **Features**,
   **Instance** y **Contributions** (puntos que suman el total del widget y contribuciones que,
   con la base, dan la predicción). Cálculo en segundo plano, con muestra acotada: un *Random
-  Forest* de 100 árboles tarda alrededor de 1 segundo con 20 atributos y unos 2 con 300.
+  Forest* de 100 árboles tarda menos de medio segundo con 20 atributos y unos 3 con 300; el
+  resultado no depende del orden de las filas ni del ordenador.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/gualbe/orange_gualbe_toolbox/main/assets/captura_nomogrampro_regresion.png" alt="Nomogram Pro con un Random Forest de regresión: aproximación con su fidelidad y banda de dispersión de los árboles" width="760">
@@ -225,7 +226,7 @@ académico, puedes tomar los metadatos de
 (GitHub ofrece «Cite this repository» con el formato APA o BibTeX), por ejemplo:
 
 > Asencio Cortés, G. (2026). *orange_gualbe_toolbox: utilidades visuales de ciencia
-> de datos para Orange Data Mining* (versión 0.7.1) [Software]. Zenodo.
+> de datos para Orange Data Mining* (versión 0.7.2) [Software]. Zenodo.
 > https://doi.org/10.5281/zenodo.24144757
 
 **Componentes de terceros.** El add-on depende de Orange Data Mining (GPL-3.0 o

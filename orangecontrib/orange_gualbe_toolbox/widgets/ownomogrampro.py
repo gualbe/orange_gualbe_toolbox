@@ -269,6 +269,8 @@ class OWNomogramPro(OWWidget, ConcurrentWidgetMixin):
     class Error(OWWidget.Error):
         unsupported = Msg("{}")
         failed = Msg("No se pudo calcular el nomograma: {}")
+        not_finite = Msg("El nomograma da valores no finitos para la clase «{}» y no se "
+                         "puede dibujar. Elige otra clase o revisa el modelo.")
         no_target = Msg("La clase «{}» no aparece en los datos con los que se entrenó el "
                         "modelo: elige otra clase objetivo.")
 
@@ -512,7 +514,22 @@ class OWNomogramPro(OWWidget, ConcurrentWidgetMixin):
         if a.kind == "classification" and a.present is not None \
                 and not a.present[target]:
             self.Error.no_target(a.class_var.values[target])
-        self.view_ = a.target_view(target, self.space_index)
+        self.Error.not_finite.clear()
+        view = a.target_view(target, self.space_index)
+        # red de seguridad: nunca se presenta como válido algo no finito
+        finite = np.isfinite(view.base) and all(
+            np.isfinite(view.grid_component(e)).any() for e in view.effects)
+        if not finite:
+            self.view_ = None
+            self.Error.not_finite(a.class_var.values[target]
+                                  if a.kind == "classification" else a.class_var.name)
+            self.model_label.setText(f"<b>{describe_model(a)}</b>")
+            self.scene.clear()
+            self.rows = []
+            self._dynamic = []
+            self.commit.deferred()
+            return
+        self.view_ = view
         html, level = fidelity_summary(self.view_)
         color = {"ok": "#276749", "medium": "#975A16", "low": "#9B2C2C"}[level]
         self.model_label.setText(

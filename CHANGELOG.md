@@ -3,6 +3,22 @@
 Cada versión se publica a la vez en GitHub (release `vX.Y.Z`) y en
 [PyPI](https://pypi.org/project/orange-gualbe-toolbox/).
 
+## 0.7.2 (2026-11-14)
+
+- **Nomogram Pro**: correcciones.
+  - Corregido: el fondo de la dependencia parcial eran las primeras filas de la muestra, así que
+    con una tabla ordenada (por ejemplo, por la clase) el nomograma cambiaba. Ahora la muestra y el
+    fondo son al azar con semilla fija y el resultado no depende del orden de las filas.
+  - Corregido: Naive Bayes entrenado sin filas de alguna clase daba puntuaciones infinitas bajo un
+    «✔ exacto». Ahora esa clase se ignora, como en la regresión logística, y nada que no sea finito
+    se presenta como exacto.
+  - Corregido: las filas que se añaden para las categorías raras cambiaban las proporciones de la
+    muestra (y con ellas la base y la fidelidad). Ahora van aparte y solo sirven, con su peso, para
+    estimar el efecto de su categoría.
+  - El número de filas de fondo ya no depende de la velocidad del ordenador: el mismo modelo con
+    los mismos datos da el mismo nomograma en cualquier máquina. Solo un modelo muy lento usa menos
+    filas, y se avisa.
+
 ## 0.7.1 (2026-11-14)
 
 - **Nomogram Pro**: correcciones.
