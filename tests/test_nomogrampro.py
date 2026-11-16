@@ -858,10 +858,17 @@ app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 # el reparto en trozos no cambia el resultado
 m10 = silent(RandomForestLearner(n_estimators=20, random_state=0), HEART)
 a1 = E.analyze(m10, HEART, method=E.PARTIAL_DEPENDENCE)
-orig_tune = E.Predictor.tune
-E.Predictor.tune = lambda self, per_row: setattr(self, "chunk", 777)
+orig_init = E.Predictor.__init__
+
+
+def init_fijo(self, *args, **kw):
+    orig_init(self, *args, **kw)
+    self.chunk, self.adaptive = 777, False
+
+
+E.Predictor.__init__ = init_fijo
 a2 = E.analyze(m10, HEART, method=E.PARTIAL_DEPENDENCE)
-E.Predictor.tune = orig_tune
+E.Predictor.__init__ = orig_init
 v1, v2 = a1.target_view(1), a2.target_view(1)
 check(all(np.array_equal(v1.grid_component(e1), v2.grid_component(e2))
           for e1, e2 in zip(v1.effects, v2.effects)) and v1.base == v2.base,
@@ -889,18 +896,82 @@ check(b.w.Error.unsupported.is_shown() and "valor conocido" in str(b.w.Error.uns
       "RF con Data sin valores y sin entrenamiento: error claro")
 b.cerrar()
 
-# 9.3 la clave del orden distingue «?» de cualquier valor
-Xk = np.array([[np.nan, 1.0], [-0.123456789, 1.0], [0.0, 1.0]])
+# 9.3 el orden canónico no depende de la posición, ni siquiera con «?»
+# (0.7.4: ordena por contenido, columna a columna, con «?» como clave aparte;
+# antes, «?» podía empatar con un valor concreto)
 rs = np.random.RandomState(12345)
 r, q = rs.normal(size=2), rs.normal(size=2)
-claves = np.nan_to_num(Xk, nan=0.0) @ r + np.isnan(Xk) @ q
-check(len(set(np.round(claves, 12))) == 3, "«?», el centinela antiguo y 0 tienen claves distintas")
-XX = np.array([[np.nan, 1.0], [0.0, 1.0]] * 50 + [[float(i), 2.0] for i in range(200)])
-o1 = E.canonical_order(XX)
-perm = np.random.RandomState(2).permutation(len(XX))
-o2 = E.canonical_order(XX[perm])
-check(np.array_equal(XX[o1], XX[perm][o2], equal_nan=True),
-      "orden canónico igual con desconocidos y ceros, en cualquier orden de entrada")
+peligrosos = [-0.123456789, 0.0, q[0] / r[0], -q[0] / r[0], np.inf, -np.inf]
+for v in peligrosos:
+    XX = np.array([[np.nan, 1.0], [v, 1.0]] * 50 + [[float(i), 2.0] for i in range(200)])
+    o1 = E.canonical_order(XX)
+    iguales = all(
+        np.array_equal(XX[o1], XX[p_][E.canonical_order(XX[p_])], equal_nan=True)
+        for p_ in (np.random.RandomState(k).permutation(len(XX)) for k in range(4)))
+    check(iguales, f"orden canónico estable con «?» frente a {v!r}")
+    pos_nan = sorted(np.flatnonzero(np.isnan(XX[o1][:, 0])))
+    check(pos_nan == list(range(pos_nan[0], pos_nan[0] + 50)),
+          f"«?» no se mezcla con {v!r} en el orden")
+
+# 9.4 interrumpir no espera al trozo en curso, ni con un modelo lento
+from Orange.base import Model as _Model
+
+
+class _Lento(_Model):
+    """Envuelve un modelo y tarda ``por_fila`` segundos por fila."""
+    por_fila = 0.001
+
+    def __init__(self, inner):
+        super().__init__(inner.domain, inner.original_domain)
+        self.inner = inner
+        self.original_data = inner.original_data
+        self.name = "lento"
+
+    def predict_storage(self, data):
+        time.sleep(len(data) * self.por_fila)
+        return self.inner(data, _Model.Probs)
+
+
+lento = _Lento(silent(RandomForestLearner(n_estimators=10, random_state=0), T9))
+b = Banco()
+b.w.set_model(lento)
+b.w.set_data(T9[:1500])
+b.w.set_instance(None)
+b.w.handleNewSignals()
+bombear(2.5)
+ocupado = b.w.task is not None
+t0 = time.time()
+b.w.onDeleteWidget()
+dt = time.time() - t0
+print(f"   modelo lento (1 ms/fila): cerrar a mitad {dt:.2f} s")
+# el trozo en curso (de hasta 10 s con este modelo) sigue en un hilo aparte y su
+# resultado se descarta: cerrar no lo espera
+check(ocupado and dt < 0.6, f"modelo lento: cerrar a mitad en {dt:.2f} s")
+b.w.deleteLater()
+app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+# 9.5 el reparto en trozos es fijo y el resultado, idéntico en cada repetición
+# (kNN cambia la última cifra según cómo se repartan las filas entre llamadas)
+check(E.chunk_rows(E.attribute_domain(silent(KNNLearner(), HEART))) == E.CHUNK_ROWS
+      and E.chunk_rows(T7.domain) == E.CHUNK_CELLS // 300,
+      "trozos fijos según el número de atributos")
+X95 = rng9.normal(size=(6000, 8))
+y95 = (X95[:, 0] + X95[:, 1] * X95[:, 2] > 0).astype(float)
+T95 = Table.from_numpy(Domain([ContinuousVariable(f"k{i}") for i in range(8)],
+                              DiscreteVariable("y", values=("0", "1"))),
+                       np.round(X95, 1), y95)       # redondeo: muchos empates
+knn95 = silent(KNNLearner(), T95)
+
+
+def huella(a):
+    return np.concatenate([np.concatenate([np.ravel(v.base_raw), np.ravel(v.recon)]
+                                          + [np.ravel(e.raw) for e in v.effects])
+                           for _, v in sorted(a.variants.items())])
+
+
+h0 = huella(E.analyze(knn95, T95))
+check(all(np.array_equal(h0, huella(E.analyze(knn95, T95)), equal_nan=True)
+          for _ in range(4)), "kNN: el mismo nomograma en cada repetición")
 
 # ---------------------------------------------------------------------------
 print("6. Tiempos con una tabla mediana")

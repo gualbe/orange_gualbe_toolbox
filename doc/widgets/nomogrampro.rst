@@ -247,8 +247,14 @@ Rendimiento
 -----------
 
 El cálculo se hace en segundo plano y se puede interrumpir en cualquier momento: el modelo predice
-en trozos de medio segundo como mucho, así que cambiar de modelo o de datos, o cerrar el widget, a
-mitad de un cálculo largo responde en menos de un segundo. El modo exacto tarda centésimas de
+por trozos en un hilo aparte, y el cálculo comprueba cada 50 milisegundos si hay que parar, sin
+esperar a que acabe el trozo. Así, cambiar de modelo o de datos, o cerrar el widget, a mitad de un
+cálculo largo responde en menos de medio segundo, también con un modelo muy lento. Los trozos son
+grandes (hasta 50.000 filas, menos con muchos atributos) para que el coste fijo de cada llamada al
+modelo apenas cuente, y su tamaño es fijo: algunos modelos, como kNN, varían en la última cifra según
+cómo se repartan las filas entre llamadas, y un reparto fijo da siempre el mismo nomograma. Si la dependencia parcial va a tardar más de 10
+segundos, la barra de estado lo dice mientras calcula («cálculo lento: unos N s») y el widget lo
+recuerda después. El modo exacto tarda centésimas de
 segundo. El aproximado usa una muestra de las filas de referencia y una rejilla por atributo. El
 número de filas de fondo de la dependencia parcial es **fijo** para unos datos dados (unas 100.000
 predicciones, algo más con muchos atributos), así que el mismo modelo con los mismos datos da el

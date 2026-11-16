@@ -23,6 +23,7 @@ de referencia; en el modo exacto es una verificación numérica.
 """
 
 import math
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import List, Optional
@@ -49,8 +50,23 @@ LOGIT_EPS = 1e-3          # recorte de las probabilidades en log-odds
 EXACT_TOL = 1e-7          # tolerancia relativa de la verificación exacta
 FINE_GRID = 101           # puntos de un efecto continuo exacto no lineal
 MAX_ROWS_PER_CALL = 100_000   # filas que se agrupan en la dependencia parcial
-CHUNK_SECONDS = 0.5           # duración de cada trozo que se predice: entre trozo y
-CHUNK_MIN, CHUNK_MAX = 500, 50_000   # trozo se comprueba si hay que interrumpir
+# trozos que se predicen. Cada trozo corre en un hilo auxiliar y la tarea comprueba
+# cada ``POLL_SECONDS`` si hay que interrumpir, sin esperar a que acabe el trozo.
+# Su tamaño es FIJO para cada modelo (nunca depende del reloj): algunos modelos,
+# como kNN, dan resultados que varían en la última cifra según cómo se reparten
+# las filas entre llamadas, así que solo un reparto fijo da siempre el mismo
+# nomograma. Trozos grandes, para que el coste fijo de cada llamada (alto en un
+# bosque de muchos árboles) y la falta de paralelismo (kNN) apenas cuenten,
+# acotados por la memoria: como mucho ``CHUNK_CELLS`` celdas por trozo.
+CHUNK_ROWS = 50_000
+CHUNK_MIN_ROWS = 2_000
+CHUNK_CELLS = 5_000_000
+# una SVM no tiene coste fijo por llamada pero sí un coste por fila alto
+# (vectores soporte × atributos): trozos más pequeños, así un trozo abandonado al
+# cancelar no sigue mucho rato en segundo plano
+SVM_CHUNK_OPS = 300_000_000
+POLL_SECONDS = 0.05
+SLOW_SECONDS = 10.0           # a partir de aquí, el estado dice que va para largo
 MIN_PD_ROWS = 50
 # escala de probabilidad aproximada con varias clases: error medio, percentil 95
 # y máximo admitidos en los datos de referencia
@@ -62,7 +78,7 @@ PD_GRID_POINTS = 2000     # puntos de rejilla de todos los numéricos juntos
 # máquina; el tiempo solo es un tope de seguridad
 PD_ROW_BUDGET = 100_000
 PD_TIME_CAP = 40.0
-PILOT_ROWS = 5000
+PILOT_ROWS = 1000
 MAX_RARE_ROWS = 2000      # filas aparte para las categorías raras (ajuste aditivo)
 MAX_FIT_COLUMNS = 1200    # columnas de la base del ajuste aditivo
 
@@ -641,12 +657,16 @@ def canonical_order(X):
     """
     if not len(X):
         return np.arange(0)
-    rs = np.random.RandomState(12345)
-    r, q = rs.normal(size=X.shape[1]), rs.normal(size=X.shape[1])
-    # los desconocidos van en un término aparte: «?» nunca empata con un valor
+    # orden lexicográfico por columnas; en cada una, primero si es «?» y luego el
+    # valor, así que «?» no puede empatar con ningún valor. Solo empatan filas
+    # idénticas, y entre ellas el orden no cambia nada.
     nan = np.isnan(X)
-    key = np.nan_to_num(X, nan=0.0, posinf=1e300, neginf=-1e300) @ r + nan @ q
-    return np.argsort(key, kind="stable")
+    vals = np.where(nan, 0.0, X)
+    keys = []
+    for j in range(X.shape[1] - 1, -1, -1):     # lexsort: la última clave manda
+        keys.append(vals[:, j])
+        keys.append(nan[:, j])
+    return np.lexsort(keys)
 
 
 def sample_rows(table, size, seed=0, rare=False):
@@ -708,8 +728,45 @@ def _make_table(adom, X):
     return Table.from_numpy(adom, np.asarray(X, dtype=float))
 
 
+def chunk_rows(adom, model=None):
+    """Filas por llamada al modelo: fijas para unos atributos y un modelo dados."""
+    p = max(1, len(adom.attributes))
+    rows = min(CHUNK_ROWS, CHUNK_CELLS // p)
+    skl = getattr(model, "skl_model", None)
+    sv = getattr(skl, "support_vectors_", None)
+    if sv is not None and getattr(sv, "shape", None) and sv.shape[0] > 0:
+        ops = sv.shape[0] * max(1, sv.shape[1])
+        rows = min(rows, SVM_CHUNK_OPS // ops)
+    return int(max(CHUNK_MIN_ROWS, rows))
+
+
+class _Detached:
+    """Ejecuta una función en un hilo aparte y guarda su resultado.
+
+    Si la tarea se interrumpe, el hilo termina solo su trozo y el resultado se
+    descarta. No es un hilo demonio: un demonio que sigue dentro del modelo
+    mientras Python se cierra puede tumbar el proceso; así, al salir de Orange se
+    espera a que acabe ese trozo (unos segundos como mucho).
+    """
+
+    def __init__(self, fn, *args):
+        self.done = threading.Event()
+        self.result = self.error = None
+
+        def run():
+            try:
+                self.result = fn(*args)
+            except BaseException as exc:  # se relanza en el hilo de la tarea
+                self.error = exc
+            finally:
+                self.done.set()
+
+        threading.Thread(target=run, daemon=False,
+                         name="nomogram-pro-predict").start()
+
+
 class Predictor:
-    """Llama al modelo real por bloques, con progreso y cancelación."""
+    """Llama al modelo real por trozos fijos, con progreso y cancelación."""
 
     def __init__(self, model, adom, kind, state=None):
         self.model = model
@@ -717,36 +774,51 @@ class Predictor:
         self.kind = kind
         self.state = state
         self.rows = 0
-        self.chunk = 2000
+        self.chunk = chunk_rows(adom, model)
+        self.rate = None          # segundos por fila del último trozo grande
 
     def tune(self, per_row):
-        """Trozos de unos ``CHUNK_SECONDS``: cancelar o cerrar nunca espera más.
-
-        Solo cambia cómo se reparte el trabajo, no el resultado: cada fila se
-        predice igual.
-        """
-        self.chunk = int(min(CHUNK_MAX, max(CHUNK_MIN,
-                                            CHUNK_SECONDS / max(per_row, 1e-9))))
+        """Compatibilidad: el tamaño del trozo es fijo para cada modelo."""
 
     def __call__(self, X):
         out = []
-        for start in range(0, len(X), self.chunk):
+        start = 0
+        while start < len(X):
             if self.state is not None and self.state.is_interruption_requested():
                 raise Cancelled
             chunk = X[start:start + self.chunk]
-            t = _make_table(self.adom, chunk)
-            if self.kind == "classification":
-                p = np.asarray(self.model(t, self.model.Probs), dtype=float)
-                if p.ndim == 1:  # pragma: no cover - defensive
-                    p = p[:, None]
+            start += len(chunk)
+            t0 = time.perf_counter()
+            if self.state is None:
+                p = self._predict(chunk)
             else:
-                p = np.asarray(self.model(t), dtype=float).reshape(-1, 1)
+                p = self._wait(_Detached(self._predict, chunk))
             out.append(p)
             self.rows += len(chunk)
+            if len(chunk) >= 256 or self.rate is None:
+                self.rate = (time.perf_counter() - t0) / max(1, len(chunk))
         if not out:
             k = 1 if self.kind == "regression" else None
             return np.empty((0, k or 0))
         return np.vstack(out)
+
+    def _predict(self, chunk):
+        t = _make_table(self.adom, chunk)
+        if self.kind == "classification":
+            p = np.asarray(self.model(t, self.model.Probs), dtype=float)
+            if p.ndim == 1:  # pragma: no cover - defensive
+                p = p[:, None]
+            return p
+        return np.asarray(self.model(t), dtype=float).reshape(-1, 1)
+
+    def _wait(self, job):
+        """Espera el trozo comprobando la interrupción cada ``POLL_SECONDS``."""
+        while not job.done.wait(POLL_SECONDS):
+            if self.state.is_interruption_requested():
+                raise Cancelled
+        if job.error is not None:
+            raise job.error
+        return job.result
 
 
 def predict_instance(model, adom, values):
@@ -1046,7 +1118,8 @@ def _progress(state, value, text=None):
         return
     if state.is_interruption_requested():
         raise Cancelled
-    state.set_progress_value(value)
+    if value is not None:
+        state.set_progress_value(value)
     if text:
         state.set_status(text)
 
@@ -1464,16 +1537,22 @@ def _partial_dependence(analysis, rcols, sample, grid_size, predictor,
     _progress(state, 2, "Predicciones del modelo")
     real = predictor(sample)
     analysis.real = real
-    # coste por fila medido con un lote ya en caliente (la primera llamada a un
-    # modelo puede tardar mucho más: hilos, índices…); solo sirve de tope
-    # (un lote grande, como los de la dependencia parcial, para que el coste fijo
-    # de cada llamada no infle la estimación)
+    # coste del modelo con dos lotes de distinto tamaño (ya en caliente): coste fijo
+    # por llamada y coste por fila. Solo sirve para el tope de tiempo y el aviso de
+    # cálculo lento, nunca para repartir el trabajo
     reps = int(np.ceil(PILOT_ROWS / max(1, len(sample))))
     pilot = np.tile(sample, (reps, 1))[:PILOT_ROWS]
+    small = pilot[:max(1, len(pilot) // 5)]
+    t0 = time.perf_counter()
+    predictor(small)
+    t_small = time.perf_counter() - t0
     t0 = time.perf_counter()
     predictor(pilot)
-    per_row = (time.perf_counter() - t0) / max(1, len(pilot))
-    predictor.tune(per_row)
+    t_big = time.perf_counter() - t0
+    per_row = max(0.0, (t_big - t_small) / max(1, len(pilot) - len(small)))
+    per_call = max(0.0, t_small - per_row * len(small))
+    if per_row <= 0:
+        per_row = t_big / max(1, len(pilot))
     nan_ok = _handles_nan(predictor, sample)
     analysis.has_nan_effect = nan_ok
     rows_per_sample = sum(len(s["grid"]) + nan_ok for s in specs)
@@ -1485,16 +1564,27 @@ def _partial_dependence(analysis, rcols, sample, grid_size, predictor,
     n_pd = int(min(n, max(floor, budget // max(1, rows_per_sample))))
     pd_note = ""
     # tope de seguridad: un modelo muy lento usa menos filas, y se avisa
-    estimate = per_row * n_pd * rows_per_sample
+    def cost(rows):
+        return per_row * rows + per_call * np.ceil(rows / predictor.chunk)
+
+    estimate = cost(n_pd * rows_per_sample)
     if estimate > time_budget and n_pd > floor:
-        n_pd = int(max(floor, time_budget / max(per_row, 1e-9)
-                       // max(1, rows_per_sample)))
+        n_pd = int(max(floor, time_budget / max(per_row + per_call / predictor.chunk,
+                                                1e-9) // max(1, rows_per_sample)))
         analysis.warnings.append(
             f"Este modelo es lento al predecir: para no pasar de unos "
             f"{time_budget:.0f} s, la dependencia parcial usa {n_pd} filas de "
             f"fondo en lugar de {int(min(n, budget // max(1, rows_per_sample)))}, "
             "así que el resultado puede variar un poco de una máquina a otra.")
     analysis.n_pd = n_pd
+    slow = ""
+    expected = cost(n_pd * rows_per_sample)
+    if expected > SLOW_SECONDS:
+        slow = f" (cálculo lento: unos {expected:.0f} s)"
+        analysis.notes.append(
+            f"Este modelo es lento al predecir: la dependencia parcial tarda unos "
+            f"{expected:.0f} s. Mientras tanto se puede cambiar de modelo o de "
+            "datos: el cálculo se interrumpe al momento.")
     if n_pd < n:
         pd_note = (f"La dependencia parcial usa {n_pd} filas de fondo, elegidas "
                    f"al azar entre las {n} de trabajo.")
@@ -1529,7 +1619,7 @@ def _partial_dependence(analysis, rcols, sample, grid_size, predictor,
     total = len(specs)
     for a, spec in enumerate(specs):
         _progress(state, 5 + 55 * a / max(1, total),
-                  f"Dependencia parcial: {adom.attributes[a].name}")
+                  f"Dependencia parcial: {adom.attributes[a].name}{slow}")
         grid = list(spec["grid"]) + ([np.nan] if nan_ok else [])
         m = len(grid)
         X = np.tile(base_rows, (m, 1))
@@ -1586,7 +1676,7 @@ def _fit_basis(specs, sample):
     return Bfull, slices
 
 
-def _choose_lambda(B, Y, penalty, seed):
+def _choose_lambda(B, Y, penalty, seed, state=None):
     """La penalización más fuerte a menos de un 5 % del mejor error de validación.
 
     La validación se hace dentro de las filas de trabajo, así que las filas
@@ -1600,6 +1690,8 @@ def _choose_lambda(B, Y, penalty, seed):
     val, fit = perm[:n_val], perm[n_val:]
     trials = []
     for cand in (1e-3, 1e-2, 1e-1, 1.0, 10.0, 100.0, 1000.0):
+        if state is not None and state.is_interruption_requested():
+            raise Cancelled
         coef, const = _ridge(B[fit], Y[fit], cand, penalty)
         pred = B[val] @ coef + const
         trials.append((cand, float(np.mean((pred - Y[val]) ** 2))))
@@ -1662,7 +1754,8 @@ def _additive_fit(analysis, rcols, sample, grid_size, predictor, seed,
     for space, target in _spaces(analysis.kind, real).items():
         te = spaces_e[space] if spaces_e is not None else np.zeros((0, target.shape[1]))
         rows = train if separate else np.arange(len(sample))
-        lam = _choose_lambda(Bfull[rows], target[rows], penalty, seed)
+        lam = _choose_lambda(Bfull[rows], target[rows], penalty, seed, state)
+        _progress(state, None)
         if separate:
             coef_tr, mean_tr = _ridge(
                 np.vstack([Bfull[train], Bext]), np.vstack([target[train], te]),

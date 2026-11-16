@@ -3,6 +3,26 @@
 Cada versión se publica a la vez en GitHub (release `vX.Y.Z`) y en
 [PyPI](https://pypi.org/project/orange-gualbe-toolbox/).
 
+## 0.7.4 (2026-11-16)
+
+- **Nomogram Pro**: correcciones.
+  - Corregido: con un modelo muy lento, interrumpir (cambiar de modelo o de datos, o cerrar el
+    widget) podía tardar más de un segundo, porque había que esperar a que acabara el trozo que se
+    estaba prediciendo. Ahora cada trozo se predice en un hilo aparte y el cálculo comprueba cada
+    50 milisegundos si hay que parar, así que interrumpir tarda menos de medio segundo.
+  - El reparto en trozos ya no depende del reloj: es fijo, así que el nomograma sale siempre igual
+    también con modelos como kNN, que varían en la última cifra según cómo se repartan las filas.
+  - El troceo ya no encarece el cálculo: un *Random Forest* de 500 árboles o kNN tardan lo mismo
+    que en la 0.7.2 (en la 0.7.3, hasta un 35 % más).
+  - Corregido: en el orden interno que hace la muestra independiente del orden de las filas, un
+    valor desconocido aún podía empatar con un valor concreto. Ahora se ordena por el contenido,
+    columna a columna, con los desconocidos aparte.
+  - **Cambio de resultados**: con datos de referencia que tienen valores desconocidos, la muestra
+    cambia un poco respecto a la 0.7.3, y con ella el nomograma aproximado (la 0.7.3 ya los había
+    cambiado respecto a la 0.7.2 por su propio arreglo del orden, sin decirlo).
+  - Si la dependencia parcial va a tardar más de 10 segundos, el widget lo dice mientras calcula y
+    después. El ajuste aditivo también se puede interrumpir a mitad.
+
 ## 0.7.3 (2026-11-14)
 
 - **Nomogram Pro**: correcciones.
